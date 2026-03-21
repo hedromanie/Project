@@ -1,6 +1,5 @@
-[ReadMe.txt](https://github.com/user-attachments/files/26157528/ReadMe.txt)
 ==================================================
-          	     Gotcha
+                    Gotcha
 ==================================================
 
 Автор: [https://github.com/hedromanie]
