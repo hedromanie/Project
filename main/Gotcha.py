@@ -2975,10 +2975,48 @@ Start-Service RemoteAccess
    • Переполняет таблицу коммутации (CAM-таблицу) коммутатора, заставляя его
      работать как хаб (ретранслировать весь трафик во все порты).
    • Может привести к отказу в обслуживании или раскрытию трафика."""
-        attacks_txt = scrolledtext.ScrolledText(attacks_frame, wrap=tk.WORD, font=('Arial', 10))
+        attacks_txt = scrolledtext.ScrolledText(attacks_frame, wrap=tk.WORD, font=('Consolas', 9))
         attacks_txt.pack(fill='both', expand=True, padx=10, pady=10)
         attacks_txt.insert('1.0', attacks_text)
         attacks_txt.config(state='disabled')
+        
+        access_frame = ttk.Frame(help_notebook)
+        help_notebook.add(access_frame, text="Доступ и диагностика")
+        access_text = """ФУНКЦИИ ВКЛАДКИ "ДОСТУП":
+1. ICMP Ping
+   • Отправляет 4 ICMP Echo Request (ping) на указанный IP-адрес.
+   • Использует системную утилиту ping, вывод отображается в логе.
+   • Позволяет проверить доступность узла и измерить время отклика.
+
+2. Port Scan
+   • Сканирует наиболее распространённые TCP-порты (21,22,23,25,53,80,110,143,443,993,995,3389).
+   • Для каждого порта выполняется попытка установить TCP-соединение.
+   • Результат: список открытых портов.
+
+3. Traceroute
+   • Выполняет трассировку маршрута до указанного узла.
+   • На Windows использует tracert с параметрами -d -h 30 -w 1000.
+   • На Linux — traceroute -n -m 30 -w 1.
+   • Показывает промежуточные узлы и задержки.
+
+4. Таблица маршрутизации
+   • Выводит IPv4 таблицу маршрутизации (аналог route print).
+   • Отфильтровывает IPv6 строки для удобства чтения.
+   • Полезна для диагностики сетевых настроек.
+
+5. Сетевые адаптеры
+   • Показывает все доступные сетевые интерфейсы (имена, IP-адреса, MAC-адреса).
+   • Использует библиотеку scapy для получения информации.
+
+6. Сканировать сеть
+   • Выполняет ARP-сканирование локальной сети /24 (на основе введённого IP).
+   • Отправляет ARP-запросы на все адреса подсети.
+   • Через 2 секунды выводит список найденных устройств с IP, MAC и, при возможности, hostname.
+   • Полезно для инвентаризации сети и обнаружения активных хостов."""
+        access_txt = scrolledtext.ScrolledText(access_frame, wrap=tk.WORD, font=('Arial', 10))
+        access_txt.pack(fill='both', expand=True, padx=10, pady=10)
+        access_txt.insert('1.0', access_text)
+        access_txt.config(state='disabled')
         
         close_btn = ttk.Button(help_window, text="Закрыть", command=help_window.destroy)
         close_btn.pack(pady=10)
