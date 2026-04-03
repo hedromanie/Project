@@ -28,7 +28,7 @@
                 "kind": "build",
                 "isDefault": false
             },
-            "detail": "Компиляция текущего .cpp файла с флагами для WinPcap."
+            "detail": "Компиляция текущего .cpp файла"
         },
         {
             "type": "cppbuild",
