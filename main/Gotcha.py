@@ -2082,12 +2082,6 @@ class Gotcha:
         self.mac_interface = ttk.Combobox(row1, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.mac_interface.pack(side='left', padx=2)
         self.mac_interface.set(self.active_interface)
-        row2 = ttk.Frame(params_frame)
-        row2.pack(fill='x', padx=5, pady=5)
-        ttk.Label(row2, text="Потоков:", width=12).pack(side='left', padx=2)
-        self.mac_threads = ttk.Entry(row2, width=10, font=('Arial', 9))
-        self.mac_threads.pack(side='left', padx=2)
-        self.mac_threads.insert(0, "4")
         row3 = ttk.Frame(params_frame)
         row3.pack(fill='x', padx=5, pady=5)
         ttk.Label(row3, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -2144,7 +2138,7 @@ class Gotcha:
         self.mac_stop_btn.config(state='normal')
         try:
             interface = self.mac_interface.get()
-            threads = int(self.mac_threads.get())
+            threads = 1
             duration = int(self.mac_duration.get())
             dst_mac = self.mac_dst.get().strip()
             random_mac = self.mac_random.get()
@@ -2317,19 +2311,37 @@ class Gotcha:
             'total_bytes': 0
         }
         self.on_protocol_change()
-
+        
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
+
+        # 1. Управление полем порта
         if proto in ["TCP", "UDP"]:
             self.custom_port_frame.pack(fill='x', padx=5, pady=5, before=self.custom_options_frame
                                         if self.custom_options_frame.winfo_ismapped() else self.custom_row7)
         else:
             self.custom_port_frame.pack_forget()
-        if proto in ["TCP", "ARP", "ICMP"]:
+
+        # 2. Управление полем размера пакета
+        if proto in ["ARP", "DNS"]:
+            # Скрываем
+            self.custom_packet_size.master.pack_forget()
+        else:
+            # Показываем, но на правильном месте: перед custom_options_frame (если он виден) или перед custom_row7
+            if not self.custom_packet_size.master.winfo_ismapped():
+                target = self.custom_options_frame if self.custom_options_frame.winfo_ismapped() else self.custom_row7
+                self.custom_packet_size.master.pack(fill='x', padx=5, pady=5, before=target)
+            # Восстанавливаем значение, если было обнулено
+            if self.custom_packet_size.get() == "0":
+                self.custom_packet_size.delete(0, tk.END)
+                self.custom_packet_size.insert(0, "1024")
+
+        # 3. Управление опциями случайного IP/MAC
+        if proto in ["TCP", "ARP", "ICMP", "UDP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
             self.custom_options_frame.pack_forget()
-
+            
     def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
         try:
             if platform.system() == "Windows":
