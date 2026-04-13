@@ -37,6 +37,7 @@
             "args": [
                 "-g",
                 "${file}",
+                "-O2",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}.exe",
                 "-I",

