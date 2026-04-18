@@ -16,6 +16,7 @@ import sys
 import json
 import winreg
 import ipaddress
+import webbrowser                     # <-- добавлено для открытия HTML
 from scapy.all import *
 from scapy.layers.dhcp import DHCP, BOOTP
 from scapy.layers.l2 import ARP, Ether, Dot1Q
@@ -353,7 +354,7 @@ class Editor:
         self.editor_window.transient(parent)
         self.editor_window.grab_set()
         try:
-            self.editor_window.iconbitmap("other/images.ico")
+            self.editor_window.iconbitmap("other/images/images.ico")
         except:
             pass
         self.create_widgets()
@@ -587,7 +588,7 @@ class Gotcha:
         self.root.title("Gotcha")
         self.root.geometry("1000x700")
         try:
-            root.iconbitmap("other/images.ico")
+            root.iconbitmap("other/images/images.ico")
         except:
             pass
         self.theme_manager = Theme(self.root)
@@ -632,6 +633,80 @@ class Gotcha:
         self.dns_spoof_rules = {}
         self.dns_spoof_lock = threading.Lock()
         self.dns_spoof_ttl = 5
+
+    def _get_doc_path(self, filename):
+        """Возвращает полный путь к файлу в папке other"""
+        if getattr(sys, 'frozen', False):
+            base = os.path.dirname(sys.executable)
+        else:
+            base = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base, "other", filename)
+
+    def show_initial_warning(self):
+        """Показывает предупреждение при запуске"""
+        warning = tk.Toplevel(self.root)
+        warning.title("Предупреждение")
+        warning.geometry("620x500")
+        warning.transient(self.root)
+        warning.grab_set()
+        try:
+            warning.iconbitmap("other/images/images.ico")
+        except:
+            pass
+        warning.resizable(False, False)
+        # центрирование
+        warning.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() // 2) - (warning.winfo_width() // 2)
+        y = self.root.winfo_y() + (self.root.winfo_height() // 2) - (warning.winfo_height() // 2)
+        warning.geometry(f"+{x}+{y}")
+        text = """ВНИМАНИЕ!
+
+Перед использованием программы обязательно ознакомьтесь с документацией:
+
+- guide.html  (полное руководство)
+- sceheme.html  (сценарии и примеры)
+
+Данная программа предназначена ИСКЛЮЧИТЕЛЬНО для тестирования
+собственных сетей или сетей, на которые у вас есть письменное разрешение.
+
+Любое несанкционированное использование против сторонних сетей
+является ПРОТИВОЗАКОННЫМ и влечёт уголовную ответственность
+(ст. 272–274 УК РФ, Computer Fraud and Abuse Act и др.)
+
+Автор не несёт ответственности за любые последствия неправомерного использования.
+
+Нажимая "Принимаю", вы подтверждаете, что ознакомились с документацией
+и обязуетесь использовать программу только в законных целях.
+"""
+        label = ttk.Label(warning, text=text, justify=tk.LEFT, wraplength=580)
+        label.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
+
+        frame_btns = ttk.Frame(warning)
+        frame_btns.pack(pady=10)
+
+        def open_guide():
+            path = self._get_doc_path("guide.html")
+            if path and os.path.exists(path):
+                webbrowser.open(path)
+            else:
+                messagebox.showerror("Ошибка", f"Файл guide.html не найден по пути {path}")
+
+        def open_scene():
+            path = self._get_doc_path("scheme.html")
+            if path and os.path.exists(path):
+                webbrowser.open(path)
+            else:
+                messagebox.showerror("Ошибка", f"Файл scheme.html не найден по пути {path}")
+
+        ttk.Button(frame_btns, text="Открыть guide.html", command=open_guide).pack(side=tk.LEFT, padx=5)
+        ttk.Button(frame_btns, text="Открыть scheme.html", command=open_scene).pack(side=tk.LEFT, padx=5)
+
+        def accept():
+            warning.destroy()
+
+        ttk.Button(warning, text="Принимаю", command=accept).pack(pady=10)
+
+        self.root.wait_window(warning)
 
     def get_active_interface(self):
         for iface in self.network_interfaces:
@@ -719,7 +794,7 @@ class Gotcha:
                                   font=('Arial', 8), width=12)
         self.ram_label.pack(side='right', padx=(2, 10))
 
-    # -------------------- Access tab --------------------
+    # -------------------- Access tab (без изменений) --------------------
     def setup_access_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -929,7 +1004,7 @@ class Gotcha:
         except Exception as e:
             return f"Ошибка получения сетевых адаптеров: {str(e)}"
 
-    # -------------------- DHCP Starvation --------------------
+    # -------------------- DHCP Starvation (без изменений) --------------------
     def setup_dhcp_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1220,7 +1295,7 @@ class Gotcha:
             self.dhcp_log.insert('end', f"DHCP Starvation error: {str(e)}\n")
             self.stop_dhcp_attack()
 
-    # -------------------- ARP Spoofing --------------------
+    # -------------------- ARP Spoofing (без изменений) --------------------
     def setup_arp_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1436,7 +1511,7 @@ class Gotcha:
         except Exception as e:
             self.arp_spoof_log.insert('end', f"ARP Spoofing error: {str(e)}\n")
 
-    # -------------------- DNS Spoofing --------------------
+    # -------------------- DNS Spoofing (без изменений) --------------------
     def setup_dns_spoof_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -1688,7 +1763,7 @@ class Gotcha:
         if self.dns_spoof_running:
             self.root.after(1000, self.update_dns_spoof_stats)
 
-    # -------------------- MAC flood --------------------
+    # -------------------- MAC flood (без изменений) --------------------
     def setup_mac_flood_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2307,7 +2382,7 @@ class Gotcha:
         if self.custom_attack_running:
             self.root.after(1000, self.update_custom_attack_stats)
 
-    # -------------------- Intercept tab --------------------
+    # -------------------- Intercept tab (без изменений) --------------------
     def setup_intercept_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2593,7 +2668,7 @@ class Gotcha:
             self.intercept_log.insert('end', f"Ошибка создания ответа: {str(e)}\n")
         return None
 
-    # -------------------- Settings tab --------------------
+    # -------------------- Settings tab (с добавлением кнопок для документации) --------------------
     def setup_settings_tab(self, parent):
         main_frame = ttk.Frame(parent)
         main_frame.pack(fill='both', expand=True, padx=8, pady=8)
@@ -2603,9 +2678,30 @@ class Gotcha:
                   command=lambda: self.theme_manager.apply_theme("light"), width=12).pack(side='left', padx=4, pady=4)
         ttk.Button(theme_frame, text="Тёмная тема", 
                   command=lambda: self.theme_manager.apply_theme("dark"), width=12).pack(side='left', padx=4, pady=4)
-        help_frame = ttk.LabelFrame(main_frame, text="Справка")
+        help_frame = ttk.LabelFrame(main_frame, text="Справка и документация")
         help_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        ttk.Button(help_frame, text="Открыть справку", command=self.show_help, width=22).pack(padx=8, pady=8)
+
+        # Кнопки для открытия документации
+        doc_btn_frame = ttk.Frame(help_frame)
+        doc_btn_frame.pack(pady=10)
+        ttk.Button(doc_btn_frame, text="Открыть guide.html", command=self._open_guide, width=20).pack(side=tk.LEFT, padx=5)
+        ttk.Button(doc_btn_frame, text="Открыть scheme.html", command=self._open_scene, width=20).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(help_frame, text="Открыть справку программы", command=self.show_help, width=22).pack(padx=8, pady=8)
+
+    def _open_guide(self):
+        path = self._get_doc_path("guide.html")
+        if path and os.path.exists(path):
+            webbrowser.open(path)
+        else:
+            messagebox.showerror("Ошибка", f"Файл guide.html не найден по пути {path}")
+
+    def _open_scene(self):
+        path = self._get_doc_path("scheme.html")
+        if path and os.path.exists(path):
+            webbrowser.open(path)
+        else:
+            messagebox.showerror("Ошибка", f"Файл scheme.html не найден по пути {path}")
 
     def save_log(self, text_widget):
         filename = filedialog.asksaveasfilename(
@@ -2627,7 +2723,7 @@ class Gotcha:
         help_window.transient(self.root)
         help_window.grab_set()
         try:
-            help_window.iconbitmap("other/images.ico")
+            help_window.iconbitmap("other/images/images.ico")
         except:
             pass
         help_notebook = ttk.Notebook(help_window)
@@ -2641,13 +2737,13 @@ https://github.com/hedromanie
 • Права администратора
 • Windows 10 21h2+ или Linux (с адаптацией)
 • Установленный Npcap
-• Wireshark рекомендуется для мониторинга
+• Wireshark рекомендуется для мониторинга трафика в сети
 • Для поиска уязвимостей рекомендуется Nmap / Zenmap GUI
 • Советую также для обучения Metasploit Framework или Kali Linux / BlackArch
 
-Если у вас не работает Dos Атака :
-Проверьте наличие установленного Npcap
-Или 
+Если у вас возникли некие проблемы или вас не устраивает скорость DOS атаки
+откройте корневую папку программы и найдите Guide.html
+Там подробно расписаны решения проблем
 
 Если у вас не работает ARP spoofing / Происходит конфликт ip-адрессов / Жертва не может достучаться до шлюза
 Откройте Powershell и впишите данные команды
@@ -2842,6 +2938,7 @@ def main():
         pass
     root = tk.Tk()
     app = Gotcha(root)
+    app.show_initial_warning()   # <--- добавлен вызов предупреждения
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
     root.mainloop()
 
