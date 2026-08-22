@@ -36,4 +36,9 @@ TCP optimizer — для оптимизации сетевой карты ( во
 
 Microsoft Visual C++ Redistributable (последняя версия)
 
+Зависимости для Windows прописаны .py 
+
+Появился Fork для Linux 
+https://github.com/TeZFuN/Gotcha-linux
+
 ==================================================
