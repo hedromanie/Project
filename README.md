@@ -2,9 +2,11 @@
 
 Инструмент для тестирования сетевой безопасности и стресс-тестирования
 
-https://img.shields.io/github/v/release/hedromanie/Gotcha
+[https://img.shields.io/github/v/release/hedromanie/Gotcha
 https://img.shields.io/badge/%D0%9F%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Windows%252010%252F11-blue
-https://img.shields.io/github/license/hedromanie/Gotcha
+https://img.shields.io/github/license/hedromanie/Gotcha](https://img.shields.io/github/v/release/hedromanie/Gotcha
+https://img.shields.io/badge/%D0%9F%D0%BB%D0%B0%D1%82%D1%84%D0%BE%D1%80%D0%BC%D0%B0-Windows%252010%252F11-blue
+https://img.shields.io/github/license/hedromanie/Gotcha)
 
     ⚠️ ВАЖНО: Инструмент предназначен ТОЛЬКО для авторизованного тестирования безопасности в контролируемых лабораторных условиях. Использование в незаконных целях запрещено.
 
